@@ -1,0 +1,56 @@
+name: "Node Failure - Service Recovery"
+id: "004_node_failure"
+difficulty: medium
+category: availability
+
+description: >
+  All data plane services on one node have been killed (simulating a node
+  crash). The candidate must identify the down node, understand which
+  services are affected, and restart them. They should also verify that
+  Themis detected the under-replicated blocks and that the cluster is
+  healthy after recovery.
+
+symptoms:
+  - "cluster status shows multiple services DOWN on one node"
+  - "Styx MEMBERS still shows the node as alive (Styx is unaffected)"
+  - "Themis scan reports show under-replicated blocks"
+
+hints:
+  - level: 1
+    text: "Run 'cluster status' to see which node has down services"
+  - level: 2
+    text: "The services are stopped but the node itself is alive. Try restarting them."
+  - level: 3
+    text: "Use 'cluster start' or 'cluster restart' to bring services back"
+  - level: 4
+    text: "Run 'cluster restart' to restart all services, or individually: cluster restart mnemosyne, cluster restart hermes, cluster restart themis"
+
+solution:
+  steps:
+    - "Run: cluster restart (restarts all services)"
+    - "Or individually: cluster restart mnemosyne && cluster restart hermes && cluster restart themis"
+    - "Verify with: cluster status"
+
+affected_nodes: auto
+
+actions:
+  - type: kill
+    service: mnemosyne
+    nodes: affected
+  - type: kill
+    service: hermes
+    nodes: affected
+  - type: kill
+    service: themis
+    nodes: affected
+
+verify:
+  - type: service_up
+    service: mnemosyne
+    nodes: all
+  - type: service_up
+    service: hermes
+    nodes: all
+  - type: service_up
+    service: themis
+    nodes: all

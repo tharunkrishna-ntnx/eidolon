@@ -1,0 +1,45 @@
+name: "Hermes Crash Loop"
+id: "002_hermes_crash_loop"
+difficulty: easy
+category: configuration
+
+description: >
+  Hermes on one node has a corrupted configuration file causing it to
+  crash immediately on startup. Prometheus auto-restarts it but it keeps
+  crashing (crash loop). The candidate must examine the Hermes logs to
+  find the config error, fix the gflags file, and restart the service.
+
+symptoms:
+  - "cluster status shows hermes DOWN with high restart count on one node"
+  - "Hermes log shows repeated startup failures"
+  - "I/O operations to the affected node are failing"
+
+hints:
+  - level: 1
+    text: "Use 'cluster status' to see which services are unhealthy"
+  - level: 2
+    text: "Check the hermes logs in ~/data/logs/ for error messages at startup"
+  - level: 3
+    text: "The hermes.gflags file may have invalid content. Compare with a working node."
+  - level: 4
+    text: "Remove the corrupted line from ~/config/hermes.gflags and run 'cluster restart hermes'"
+
+solution:
+  steps:
+    - "Open ~/config/hermes.gflags and remove the 'CORRUPTED_LINE' entry"
+    - "Run: cluster restart hermes"
+
+affected_nodes: auto
+
+actions:
+  - type: corrupt_config
+    service: hermes
+    nodes: affected
+  - type: restart
+    service: hermes
+    nodes: affected
+
+verify:
+  - type: service_up
+    service: hermes
+    nodes: all

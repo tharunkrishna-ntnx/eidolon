@@ -1,0 +1,5 @@
+# Styx (config coordinator) configuration
+--port=7101
+--discovery_port=7100
+--beacon_interval_sec=5
+--node_timeout_sec=30

@@ -1,0 +1,9 @@
+# Hermes (I/O service) configuration
+--port=7300
+--replication_factor=2
+--io_threads=4
+--block_size_kb=64
+--styx_host=127.0.0.1
+--styx_port=7101
+--mnemosyne_host=127.0.0.1
+--mnemosyne_port=7200

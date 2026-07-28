@@ -1,0 +1,7 @@
+
+  ╔══════════════════════════════════════════════╗
+  ║              Eidolon Cluster Node            ║
+  ╚══════════════════════════════════════════════╝
+
+  Run 'cluster status' to see the cluster state.
+

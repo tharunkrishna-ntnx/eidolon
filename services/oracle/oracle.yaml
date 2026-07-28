@@ -1,0 +1,48 @@
+default_profile: steady
+
+profiles:
+  steady:
+    create_iops: 30
+    read_iops: 80
+    update_iops: 15
+    delete_iops: 5
+    block_size_kb: 64
+    pattern: random
+    target_nodes: all
+
+  burst:
+    create_iops: 800
+    read_iops: 1500
+    update_iops: 400
+    delete_iops: 100
+    block_size_kb: 4
+    pattern: random
+    duration_sec: 60
+    target_nodes: all
+
+  sequential_heavy:
+    create_iops: 400
+    read_iops: 0
+    update_iops: 80
+    delete_iops: 20
+    block_size_kb: 1024
+    pattern: sequential
+    target_nodes: all
+
+  churn:
+    create_iops: 50
+    read_iops: 50
+    update_iops: 50
+    delete_iops: 50
+    block_size_kb: 64
+    pattern: random
+    target_nodes: all
+
+  idle:
+    create_iops: 0
+    read_iops: 0
+    update_iops: 0
+    delete_iops: 0
+    block_size_kb: 64
+    pattern: random
+    target_nodes: all

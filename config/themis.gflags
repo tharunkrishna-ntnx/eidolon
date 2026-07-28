@@ -1,0 +1,5 @@
+# Themis (curator/balancer) configuration
+--scan_interval_sec=60
+--imbalance_threshold_pct=20.0
+--styx_host=127.0.0.1
+--styx_port=7101
