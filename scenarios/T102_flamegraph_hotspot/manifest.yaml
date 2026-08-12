@@ -1,0 +1,53 @@
+name: "Flamegraph CPU Hotspot Investigation"
+id: T102_flamegraph_hotspot
+difficulty: easy
+category: training
+module: 2
+audience: all
+
+description: >
+  Hermes has inline integrity checking enabled, which burns CPU on every
+  write operation.  Under burst I/O load, a clear CPU hotspot appears.
+  Generate a flamegraph and identify the hot function and call chain.
+
+symptoms:
+  - "Hermes is using high CPU under load"
+  - "I/O throughput may be lower than expected"
+
+lab_instructions: |
+  1. Run 'sudo perf top -p $(pidof hermes)' and observe the hottest function
+  2. Capture a 30-second profile: 'sudo perf record -F 99 -p $(pidof hermes) -g --call-graph dwarf -- sleep 30'
+  3. Generate a flamegraph: 'perf script | stackcollapse-perf.pl | flamegraph.pl > hermes_flame.svg'
+  4. Open the SVG and find the widest tower
+  5. Write the name of the hot function and the call chain from top to bottom
+
+deliverable: "An SVG flamegraph file and a description of the hot path (function name + call chain)"
+
+hints:
+  - level: 1
+    text: "Start with perf top to get a live view of the hottest functions"
+  - level: 2
+    text: "Use perf record with --call-graph dwarf for full stack traces"
+  - level: 3
+    text: "The flamegraph scripts are in ~/bin/ -- stackcollapse-perf.pl and flamegraph.pl"
+  - level: 4
+    text: "The widest tower at the top of the flamegraph is where CPU time is spent"
+
+affected_nodes: auto
+
+oracle_profile: sequential_heavy
+
+actions:
+  - type: gflag
+    service: hermes
+    flag: inline_integrity_check
+    value: true
+    nodes: all
+  - type: restart
+    service: hermes
+    nodes: all
+
+verify:
+  - type: service_up
+    service: hermes
+    nodes: all

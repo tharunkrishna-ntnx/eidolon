@@ -8,9 +8,12 @@
 #include <glog/logging.h>
 
 #include <cstdlib>
+#include <fcntl.h>
 #include <functional>
 #include <sstream>
+#include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 DEFINE_int32(memory_limit_mb, 256, "Memory limit for the metadata store in MiB");
@@ -19,6 +22,10 @@ DEFINE_string(data_dir, "", "Directory for persistent data");
 DEFINE_int32(save_interval_sec, 60, "Seconds between persistence snapshots");
 DEFINE_string(styx_host, "127.0.0.1", "Styx host for registration");
 DEFINE_int32(styx_port, eidolon::kDefaultStyxPort, "Styx TCP port");
+DEFINE_bool(sync_on_write, false,
+    "Force durable fsync after each write for WAL consistency");
+DEFINE_bool(validate_metadata_paths, false,
+    "Validate schema path existence before metadata commit");
 
 namespace eidolon {
 namespace mnemosyne {
@@ -145,6 +152,18 @@ class MnemosyneService : public ServiceBase {
       buf.erase(0, len);
       if (!buf.empty() && buf[0] == '\n') buf.erase(0, 1);
       if (store_->Put(key, value)) {
+        if (FLAGS_sync_on_write && !FLAGS_data_dir.empty()) {
+          int dfd = ::open(FLAGS_data_dir.c_str(), O_RDONLY);
+          if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
+        }
+        if (FLAGS_validate_metadata_paths) {
+          struct stat st;
+          for (int i = 0; i < 500; ++i) {
+            std::string path = FLAGS_data_dir + "/schema_v" +
+                               std::to_string(i) + ".meta";
+            ::stat(path.c_str(), &st);
+          }
+        }
         LOG(INFO) << "cf=default op=PUT key=" << key
                   << " size=" << value.size()
                   << " latency_usecs=" << (rand() % 400 + 100)

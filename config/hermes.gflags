@@ -7,3 +7,6 @@
 --styx_port=7101
 --mnemosyne_host=127.0.0.1
 --mnemosyne_port=7200
+--io_ack_delay_us=0
+--inline_integrity_check=false
+--revalidate_block_handle=false

@@ -1,0 +1,124 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║  perf / BPF Quick Reference                                        ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+─── perf stat (hardware counters) ─────────────────────────────────────
+
+  perf stat -p PID sleep 10
+    Collect CPU counters for 10s.  Look at instructions-per-cycle (IPC).
+
+  perf stat -e cycles,instructions,cache-misses,cache-references -r 3 -p PID sleep 10
+    Detailed counters with 3 repetitions for variance.
+
+  Interpretation:
+    IPC ≥ 1.5   → likely CPU-bound (compute heavy)
+    IPC < 0.5   → likely memory-bound (cache misses)
+
+─── perf top (live profiler) ──────────────────────────────────────────
+
+  sudo perf top -p PID
+    Live view of hot functions.  Press 'q' to quit.
+
+─── perf record + flamegraph ──────────────────────────────────────────
+
+  sudo perf record -F 99 -p PID -g --call-graph dwarf -- sleep 30
+  perf script | stackcollapse-perf.pl | flamegraph.pl > flame.svg
+
+  Both scripts are in ~/bin/.  Open the SVG in a browser.
+
+─── perf trace (syscall tracing) ──────────────────────────────────────
+
+  sudo perf trace -p PID -- sleep 5
+    Trace all syscalls for 5 seconds.
+
+  sudo perf trace -s -p PID -- sleep 10
+    Summary mode: table of syscall counts and time.
+
+  sudo perf trace --duration 5 -p PID -- sleep 10
+    Only show syscalls slower than 5ms.
+
+─── strace ────────────────────────────────────────────────────────────
+
+  strace -c -p PID
+    Count and summarize syscalls (Ctrl+C to stop).
+
+  strace -e trace=openat,stat,read,write -p PID 2>&1 | head -50
+    Trace specific syscalls.
+
+─── bpftrace one-liners ───────────────────────────────────────────────
+
+  sudo bpftrace -l 'tracepoint:syscalls:*read*'
+    List available tracepoints matching "read".
+
+  sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat /pid == PID/ {
+    printf("%s -> %s\n", comm, str(args->filename));
+  }'
+    Trace files opened by a process.
+
+  sudo bpftrace -e 'tracepoint:syscalls:sys_enter_write /pid == PID/ {
+    @bytes = hist(args->count);
+  }'
+    Histogram of write sizes.
+
+  sudo bpftrace -e '
+    tracepoint:syscalls:sys_enter_read /pid == PID/ { @s[tid] = nsecs; }
+    tracepoint:syscalls:sys_exit_read /@s[tid]/ {
+      @us = hist((nsecs - @s[tid]) / 1000);
+      delete(@s[tid]);
+    }'
+    Latency histogram for read() in microseconds.
+
+─── bcc-tools ─────────────────────────────────────────────────────────
+
+  sudo biolatency-bpfcc
+    Block I/O latency histogram (Ctrl+C to stop).
+
+  sudo offcputime-bpfcc -p PID 10
+    Off-CPU stacks for 10 seconds (shows where process blocks).
+
+  sudo opensnoop-bpfcc -p PID
+    Trace file opens for a process.
+
+  sudo tcpconnect-bpfcc
+    Trace outbound TCP connections.
+
+─── kernel-level tracing (advanced) ───────────────────────────────────
+
+  sudo bpftrace -e 'kprobe:vfs_read { @[kstack, comm] = count(); }'
+    VFS read() call stacks by process.
+
+  sudo bpftrace -e 'kprobe:tcp_retransmit_skb { @[kstack, comm] = count(); }'
+    TCP retransmit stacks.
+
+  sudo bpftrace -e '
+    tracepoint:block:block_rq_issue { @s[args->sector] = nsecs; }
+    tracepoint:block:block_rq_complete /@s[args->sector]/ {
+      @us = hist((nsecs - @s[args->sector]) / 1000);
+      delete(@s[args->sector]);
+    }'
+    Block I/O request latency histogram.
+
+  sudo bpftrace -e '
+    kprobe:vfs_write { @s[tid] = nsecs; }
+    kretprobe:vfs_write /@s[tid]/ {
+      @ns = hist(nsecs - @s[tid]);
+      delete(@s[tid]);
+    }'
+    VFS write latency histogram.
+
+─── uprobe tracing ────────────────────────────────────────────────────
+
+  sudo bpftrace -l 'uprobe:/home/ember/bin/hermes:*'
+    List traceable functions in a binary.
+
+  sudo bpftrace -e 'uprobe:/home/ember/bin/hermes:function_name {
+    printf("called by tid %d\n", tid);
+  }'
+    Trace a specific user-space function.
+
+─── Tips ──────────────────────────────────────────────────────────────
+
+  • Replace PID with $(pidof SERVICE_NAME)
+  • bpftrace args fields: use `bpftrace -lv 'tracepoint:...'` to list
+  • Off-CPU flamegraph: offcputime-bpfcc -df PID 10 | flamegraph.pl > off.svg
+  • Always run perf/bpftrace with sudo

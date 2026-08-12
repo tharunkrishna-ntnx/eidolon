@@ -1,0 +1,53 @@
+name: "Argument Tracing and Latency Histograms"
+id: T105_argument_tracing
+difficulty: medium
+category: training
+module: 4
+audience: all
+
+description: >
+  The cluster is running normally under steady load.  Use bpftrace to
+  trace Hermes I/O operations at the syscall and function level.  Capture
+  arguments (file descriptors, byte counts) and build latency histograms.
+
+symptoms:
+  - "No fault injected -- this is a tracing exercise on a healthy cluster"
+
+lab_instructions: |
+  1. Find Hermes PID: 'pidof hermes'
+  2. Trace which files Hermes opens:
+     sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat /pid == PID/ { printf("%s -> %s\n", comm, str(args->filename)); }'
+  3. Trace read/write sizes:
+     sudo bpftrace -e 'tracepoint:syscalls:sys_enter_write /pid == PID/ { @bytes = hist(args->count); }'
+  4. Build a latency histogram for read() syscalls:
+     sudo bpftrace -e '
+       tracepoint:syscalls:sys_enter_read /pid == PID/ { @start[tid] = nsecs; }
+       tracepoint:syscalls:sys_exit_read /@start[tid]/ {
+         @us = hist((nsecs - @start[tid]) / 1000); delete(@start[tid]);
+       }'
+  5. (Mid-level) Use a uprobe to trace a Hermes function:
+     sudo bpftrace -l 'uprobe:/home/ember/bin/hermes:*Write*'
+     Then attach and print arguments
+
+deliverable: "A latency histogram (hist() output) for read() or write() syscalls and an explanation of the distribution"
+
+hints:
+  - level: 1
+    text: "Start by listing available tracepoints: bpftrace -l 'tracepoint:syscalls:*read*'"
+  - level: 2
+    text: "Use the /pid == PID/ filter to trace only the Hermes process"
+  - level: 3
+    text: "hist() and lhist() produce bucket-based histograms -- great for latency"
+  - level: 4
+    text: "Tracepoint args are accessed via args->fieldname; use bpftrace -lv to see available fields"
+
+affected_nodes: auto
+
+oracle_profile: steady
+
+actions: []
+
+verify:
+  - type: service_up
+    service: hermes
+    nodes: all

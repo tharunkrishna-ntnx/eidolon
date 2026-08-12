@@ -13,10 +13,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Allow overriding user names from the command line.
+INSTALL_PERF_TOOLS=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --master-user)    sed -i "s/^master = .*/master = $2/" "$REPO_ROOT/eidolon.conf"; shift 2 ;;
     --candidate-user) sed -i "s/^candidate = .*/candidate = $2/" "$REPO_ROOT/eidolon.conf"; shift 2 ;;
+    --perf-tools)     INSTALL_PERF_TOOLS=true; shift ;;
     *) echo "Unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -36,6 +38,14 @@ echo "=== Step 1/6: Installing system dependencies ==="
 sudo apt-get update -qq
 sudo apt-get install -y -qq \
   build-essential cmake git python3 python3-pip python3-venv rsync netcat-openbsd
+if [ "$INSTALL_PERF_TOOLS" = "true" ]; then
+  echo "  Including perf/BPF tooling..."
+  sudo apt-get install -y -qq \
+    linux-perf bpfcc-tools bpftrace linux-headers-"$(uname -r)" 2>/dev/null || \
+    echo "  WARNING: some perf/BPF packages may not be available"
+  sudo sysctl -w kernel.perf_event_paranoid=1 2>/dev/null || true
+  sudo sysctl -w kernel.kptr_restrict=0 2>/dev/null || true
+fi
 echo ""
 
 # ---- Step 2: Python dependencies ----
@@ -98,6 +108,7 @@ sleep 2
 start_candidate_service mnemosyne
 start_candidate_service hermes
 start_candidate_service themis
+start_candidate_service atlas
 
 echo ""
 echo "╔══════════════════════════════════════════════╗"

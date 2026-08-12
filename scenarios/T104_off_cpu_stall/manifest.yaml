@@ -1,0 +1,55 @@
+name: "Off-CPU Stall: Disk Sync Bottleneck"
+id: T104_off_cpu_stall
+difficulty: medium
+category: training
+module: 3
+audience: mid-level
+
+description: >
+  Mnemosyne is forcing a durable fsync after every metadata write.
+  The process spends most of its time blocked on disk I/O, not using CPU.
+  Use off-CPU analysis and block I/O tracing to find where the time goes.
+
+symptoms:
+  - "Mnemosyne metadata writes are slow"
+  - "CPU usage is very low but throughput is poor"
+  - "Block device utilization may be elevated"
+
+lab_instructions: |
+  1. Confirm low CPU: 'sudo perf top -p $(pidof mnemosyne)'
+  2. Run 'sudo perf trace --duration 5 -p $(pidof mnemosyne)' to find slow syscalls
+  3. Use 'sudo biolatency-bpfcc' to see block I/O latency distribution
+  4. Use 'sudo offcputime-bpfcc -p $(pidof mnemosyne) 10' to see where the process blocks
+  5. Generate an off-CPU flamegraph if possible: pipe offcputime -f output through flamegraph.pl
+  6. Identify the syscall causing the off-CPU time
+
+deliverable: "Identification of the blocking syscall (fsync) and a biolatency histogram showing disk latency"
+
+hints:
+  - level: 1
+    text: "This is an off-CPU problem -- the process is blocked waiting for something"
+  - level: 2
+    text: "perf trace --duration 5 shows only syscalls slower than 5ms -- look for fsync"
+  - level: 3
+    text: "offcputime-bpfcc shows kernel stacks where the process is sleeping"
+  - level: 4
+    text: "The sync_on_write flag is forcing an fsync on every metadata PUT operation"
+
+affected_nodes: auto
+
+oracle_profile: steady
+
+actions:
+  - type: gflag
+    service: mnemosyne
+    flag: sync_on_write
+    value: true
+    nodes: all
+  - type: restart
+    service: mnemosyne
+    nodes: all
+
+verify:
+  - type: service_up
+    service: mnemosyne
+    nodes: all

@@ -2,7 +2,7 @@
 """eidolon-ctl -- Interviewer control CLI for Eidolon.
 
 Usage:
-  eidolon-ctl scenarios list                     List available scenarios
+  eidolon-ctl scenarios list [--training|--interviews]  List available scenarios
   eidolon-ctl scenarios info <id>                Show scenario details
   eidolon-ctl scenarios apply <id>               Apply a scenario (inject fault)
   eidolon-ctl scenarios hint <id>                Show next progressive hint
@@ -134,8 +134,8 @@ def load_manifest(scenario_id):
         return data
 
 
-def list_scenarios():
-    """List all available scenarios."""
+def list_scenarios(filter_category=""):
+    """List all available scenarios, optionally filtered by category."""
     if not os.path.isdir(SCENARIOS_DIR):
         print("No scenarios directory found.")
         return
@@ -145,22 +145,48 @@ def list_scenarios():
         manifest_path = os.path.join(SCENARIOS_DIR, entry, "manifest.yaml")
         if os.path.exists(manifest_path):
             manifest = load_manifest(entry)
+            cat = manifest.get("category", "?")
+            if filter_category and cat != filter_category:
+                continue
             scenarios.append({
                 "id": entry,
                 "name": manifest.get("name", entry),
                 "difficulty": manifest.get("difficulty", "?"),
-                "category": manifest.get("category", "?"),
+                "category": cat,
+                "module": manifest.get("module", ""),
+                "audience": manifest.get("audience", ""),
             })
 
     if not scenarios:
         print("No scenarios found in", SCENARIOS_DIR)
         return
 
-    print()
-    print(f"  {'ID':<30s} {'Name':<35s} {'Difficulty':<12s} {'Category'}")
-    print(f"  {'─' * 90}")
-    for s in scenarios:
-        print(f"  {s['id']:<30s} {s['name']:<35s} {s['difficulty']:<12s} {s['category']}")
+    # Group by category.
+    interview = [s for s in scenarios if s["category"] != "training"]
+    training = [s for s in scenarios if s["category"] == "training"]
+
+    if interview:
+        print()
+        print(f"  Interview Scenarios")
+        print(f"  {'─' * 90}")
+        print(f"  {'ID':<30s} {'Name':<35s} {'Difficulty':<12s} {'Category'}")
+        print(f"  {'─' * 90}")
+        for s in interview:
+            print(f"  {s['id']:<30s} {s['name']:<35s} "
+                  f"{s['difficulty']:<12s} {s['category']}")
+
+    if training:
+        print()
+        print(f"  Training Modules")
+        print(f"  {'─' * 90}")
+        print(f"  {'ID':<30s} {'Name':<35s} {'Difficulty':<12s} "
+              f"{'Module':<8s} {'Audience'}")
+        print(f"  {'─' * 90}")
+        for s in training:
+            mod = str(s['module']) if s['module'] else "?"
+            print(f"  {s['id']:<30s} {s['name']:<35s} "
+                  f"{s['difficulty']:<12s} {mod:<8s} {s['audience']}")
+
     print()
 
 
@@ -172,6 +198,10 @@ def show_scenario_info(scenario_id):
     print(f"  ID:         {manifest.get('id', scenario_id)}")
     print(f"  Difficulty: {manifest.get('difficulty', '?')}")
     print(f"  Category:   {manifest.get('category', '?')}")
+    if manifest.get("module"):
+        print(f"  Module:     {manifest.get('module')}")
+    if manifest.get("audience"):
+        print(f"  Audience:   {manifest.get('audience')}")
     print()
     desc = manifest.get("description", "No description.")
     print(f"  Description:")
@@ -184,6 +214,18 @@ def show_scenario_info(scenario_id):
         print(f"  Symptoms:")
         for s in symptoms:
             print(f"    - {s}")
+        print()
+
+    lab = manifest.get("lab_instructions")
+    if lab:
+        print(f"  Lab Instructions:")
+        for line in lab.strip().split("\n"):
+            print(f"    {line}")
+        print()
+
+    deliverable = manifest.get("deliverable")
+    if deliverable:
+        print(f"  Deliverable: {deliverable}")
         print()
 
     oracle_profile = manifest.get("oracle_profile")
@@ -233,18 +275,33 @@ def remote_exec(ip, user, cmd):
     conf = load_conf()
     master = conf.get("users", "master", fallback="scorch")
     sudo_pass = get_sudo_pass()
+    local_ip = get_local_ip()
 
-    if sudo_pass:
-        wrapped = (f"echo '{sudo_pass}' | "
-                   f"sudo -S -u {user} bash -c '{cmd}'")
+    import base64
+    encoded = base64.b64encode(cmd.encode()).decode()
+    decoded_cmd = f"echo {encoded} | base64 -d | bash"
+
+    if ip == local_ip:
+        if sudo_pass:
+            full = (f"echo '{sudo_pass}' | "
+                    f"sudo -S -u {user} bash -c \"{decoded_cmd}\"")
+        else:
+            full = f"sudo -u {user} bash -c \"{decoded_cmd}\""
+        result = subprocess.run(
+            ["bash", "-c", full],
+            capture_output=True, text=True, timeout=30,
+        )
     else:
-        wrapped = f"sudo -u {user} bash -c '{cmd}'"
-
-    result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
-         f"{master}@{ip}", wrapped],
-        capture_output=True, text=True, timeout=30,
-    )
+        if sudo_pass:
+            wrapped = (f"echo '{sudo_pass}' | "
+                       f"sudo -S -u {user} bash -c \"{decoded_cmd}\"")
+        else:
+            wrapped = f"sudo -u {user} bash -c \"{decoded_cmd}\""
+        result = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+             f"{master}@{ip}", wrapped],
+            capture_output=True, text=True, timeout=30,
+        )
     return result.stdout, result.stderr, result.returncode
 
 
@@ -291,7 +348,15 @@ def apply_scenario(scenario_id):
         action_type = action.get("type", "")
         service = action.get("service", "")
         nodes = action.get("nodes", "affected")
-        target_ips = affected_ips if nodes == "affected" else members
+        if nodes == "affected":
+            target_ips = affected_ips
+        elif nodes == "all":
+            target_ips = members
+        elif isinstance(nodes, list):
+            target_ips = [members[i - 1] for i in nodes
+                          if isinstance(i, int) and 0 < i <= len(members)]
+        else:
+            target_ips = members
 
         if action_type == "gflag":
             flag = action["flag"]
@@ -299,10 +364,10 @@ def apply_scenario(scenario_id):
             gflags_file = f"/home/{candidate_user}/config/{service}.gflags"
             for ip in target_ips:
                 print(f"  [{ip}] Setting --{flag}={value} in {service}.gflags")
-                # Read, modify, write the gflags file.
-                cmd = (f"sed -i 's/--{flag}=.*$/--{flag}={value}/' "
+                cmd = (f"grep -q -- \"--{flag}=\" {gflags_file} && "
+                       f"sed -i \"s|--{flag}=.*|--{flag}={value}|\" "
                        f"{gflags_file} || "
-                       f"echo '--{flag}={value}' >> {gflags_file}")
+                       f"echo \"--{flag}={value}\" >> {gflags_file}")
                 remote_exec(ip, candidate_user, cmd)
 
         elif action_type == "restart":
@@ -606,7 +671,12 @@ def main():
 
     if group == "scenarios":
         if cmd == "list":
-            list_scenarios()
+            filt = ""
+            if "--training" in sys.argv:
+                filt = "training"
+            elif "--interviews" in sys.argv:
+                filt = "interview"
+            list_scenarios(filt)
         elif cmd == "info" and arg:
             show_scenario_info(arg)
         elif cmd == "apply" and arg:

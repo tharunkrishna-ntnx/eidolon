@@ -1,0 +1,97 @@
+name: "Capstone: Multi-Layer Performance Investigation"
+id: T106_capstone
+difficulty: hard
+category: training
+module: 5
+audience: mid-level
+
+description: >
+  Multiple performance issues are present simultaneously across services.
+  Hermes has high I/O acknowledgment latency, Mnemosyne is doing durable
+  syncs on every write, and Atlas is health-checking all services.
+  Investigate using kernel-layer tracing (kprobes, block tracepoints, TCP
+  probes) and produce an incident runbook.
+
+symptoms:
+  - "Overall cluster throughput is degraded"
+  - "Multiple services show elevated latency"
+  - "Atlas health checks may report slow responses"
+
+lab_instructions: |
+  1. Characterize disk I/O latency:
+     sudo biolatency-bpfcc
+     or use block tracepoints:
+     sudo bpftrace -e '
+       tracepoint:block:block_rq_issue { @s[args->sector] = nsecs; }
+       tracepoint:block:block_rq_complete /@s[args->sector]/ {
+         @us = hist((nsecs - @s[args->sector])/1000); delete(@s[args->sector]);
+       }'
+  2. Attribute disk I/O to processes using kernel stacks:
+     sudo bpftrace -e 'kprobe:vfs_read { @[kstack, comm] = count(); }'
+  3. Check for TCP issues:
+     sudo bpftrace -e 'kprobe:tcp_retransmit_skb { @[kstack, comm] = count(); }'
+     sudo tcpconnect-bpfcc
+  4. Trace VFS latency:
+     sudo bpftrace -e '
+       kprobe:vfs_write { @s[tid] = nsecs; }
+       kretprobe:vfs_write /@s[tid]/ { @ns = hist(nsecs - @s[tid]); delete(@s[tid]); }'
+  5. Produce an incident writeup: symptom -> tool -> evidence -> root cause
+     for each issue found
+
+deliverable: "A runbook-style writeup covering each issue: symptom, tool used, evidence gathered, root cause"
+
+hints:
+  - level: 1
+    text: "Start high, go low: perf stat -> perf top -> syscall trace -> kprobe"
+  - level: 2
+    text: "Use biolatency to check if disk latency is a factor"
+  - level: 3
+    text: "Check multiple services -- the problem is not isolated to one"
+  - level: 4
+    text: "Hermes has io_ack_delay_us set, Mnemosyne has sync_on_write enabled"
+
+affected_nodes: auto
+
+oracle_profile: steady
+
+actions:
+  - type: gflag
+    service: hermes
+    flag: io_ack_delay_us
+    value: 5000
+    nodes: all
+  - type: gflag
+    service: mnemosyne
+    flag: sync_on_write
+    value: true
+    nodes: all
+  - type: gflag
+    service: atlas
+    flag: health_check_targets
+    value: hermes,mnemosyne,themis
+    nodes: all
+  - type: gflag
+    service: atlas
+    flag: scheduling_interval_ms
+    value: 2000
+    nodes: all
+  - type: restart
+    service: hermes
+    nodes: all
+  - type: restart
+    service: mnemosyne
+    nodes: all
+  - type: restart
+    service: atlas
+    nodes: all
+
+verify:
+  - type: service_up
+    service: hermes
+    nodes: all
+  - type: service_up
+    service: mnemosyne
+    nodes: all
+  - type: service_up
+    service: atlas
+    nodes: all
