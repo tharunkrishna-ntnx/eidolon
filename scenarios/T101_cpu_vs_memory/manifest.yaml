@@ -1,0 +1,98 @@
+name: "CPU-Bound vs Memory-Bound Analysis"
+id: T101_cpu_vs_memory
+difficulty: easy
+category: training
+module: 1
+audience: all
+
+description: >
+  Atlas is configured with extreme scheduling depth on one node (CPU-bound)
+  and an extremely large VM state table on another node (memory-bound).
+  Use perf tools to profile both nodes and explain the difference between
+  the two workload types.
+
+symptoms:
+  - "Atlas is consuming high CPU on one node and moderate CPU on another"
+  - "Memory usage differs dramatically between nodes"
+
+lab_instructions: |
+  1. Check CPU/memory usage on both nodes:
+     ssh NODE_IP 'ps -p $(pgrep -x atlas) -o %cpu,%mem,rss'
+  2. Run 'sudo perf stat -e task-clock,context-switches,page-faults -p $(pidof atlas) -- sleep 10' on both nodes
+  3. Run 'sudo perf top -p $(pidof atlas)' on both nodes -- compare which functions are hot
+  4. Generate flamegraphs on both nodes:
+     sudo perf record -F 99 -p $(pidof atlas) -g --call-graph dwarf -- sleep 30
+     perf script | stackcollapse-perf.pl | flamegraph.pl > atlas_flame.svg
+  5. Compare: one flamegraph should show scheduling/math functions, the other random table lookups
+
+deliverable: "Flamegraphs from both nodes and an explanation of which is CPU-bound vs memory-bound"
+
+hints:
+  - level: 1
+    text: "Start by comparing CPU and memory usage between nodes with 'ps'"
+  - level: 2
+    text: "Use perf top to see which functions consume the most CPU on each node"
+  - level: 3
+    text: "The node with high RSS (resident memory) is memory-bound; the other is CPU-bound"
+  - level: 4
+    text: "Node 1: high scheduling_depth = CPU-bound (ScorePlacement is hot). Node 2: large vm_table_size_mb = memory-bound (RandomLookup is hot)"
+
+affected_nodes:
+  - 1
+  - 2
+
+actions:
+  # Node 1: CPU-bound -- extreme scheduling depth with tight loop
+  - type: gflag
+    service: atlas
+    flag: scheduling_depth
+    value: 10000
+    nodes:
+      - 1
+  - type: gflag
+    service: atlas
+    flag: vm_table_size_mb
+    value: 4
+    nodes:
+      - 1
+  - type: gflag
+    service: atlas
+    flag: scheduling_interval_ms
+    value: 100
+    nodes:
+      - 1
+
+  # Node 2: Memory-bound -- large table with heavy random lookups
+  - type: gflag
+    service: atlas
+    flag: scheduling_depth
+    value: 10
+    nodes:
+      - 2
+  - type: gflag
+    service: atlas
+    flag: vm_table_size_mb
+    value: 512
+    nodes:
+      - 2
+  - type: gflag
+    service: atlas
+    flag: table_lookups_per_cycle
+    value: 500000
+    nodes:
+      - 2
+  - type: gflag
+    service: atlas
+    flag: scheduling_interval_ms
+    value: 100
+    nodes:
+      - 2
+
+  - type: restart
+    service: atlas
+    nodes: affected
+
+verify:
+  - type: service_up
+    service: atlas
+    nodes: all

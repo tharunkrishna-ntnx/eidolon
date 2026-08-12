@@ -9,6 +9,7 @@ prometheus_port = 7102
 mnemosyne_port = 7200
 hermes_port = 7300
 oracle_port = 7400
+atlas_port = 7500
 
 [auth]
 # sudo password for switching between master/candidate users.

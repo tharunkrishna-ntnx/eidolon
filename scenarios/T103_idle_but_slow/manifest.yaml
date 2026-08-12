@@ -1,0 +1,54 @@
+name: "The Idle-but-Slow Mystery"
+id: T103_idle_but_slow
+difficulty: medium
+category: training
+module: 3
+audience: all
+
+description: >
+  Mnemosyne is running but responding extremely slowly to metadata writes.
+  CPU usage is near 0%.  Something is wasting time in the kernel on every
+  PUT operation.  Use syscall tracing tools to find the root cause.
+
+symptoms:
+  - "Mnemosyne responses are very slow"
+  - "CPU usage for mnemosyne is near 0%"
+  - "The cluster feels sluggish for metadata operations"
+
+lab_instructions: |
+  1. Confirm CPU is idle: 'sudo perf top -p $(pidof mnemosyne)' -- should show very little activity
+  2. Run 'strace -c -p $(pidof mnemosyne)' for 10 seconds and check which syscall dominates
+  3. Use 'sudo perf trace -s -p $(pidof mnemosyne) -- sleep 10' for a lower-overhead view
+  4. Use 'sudo opensnoop-bpfcc -p $(pidof mnemosyne)' to see what files are being accessed
+  5. Write a one-paragraph root cause identifying the syscall and why it's causing slowness
+
+deliverable: "A one-paragraph root cause identifying the dominant syscall and what is triggering it"
+
+hints:
+  - level: 1
+    text: "This is a classic 'idle but slow' case -- CPU profilers won't help here"
+  - level: 2
+    text: "Try strace -c to get a summary of syscall counts and time"
+  - level: 3
+    text: "Look for a syscall with a very high call count and many errors"
+  - level: 4
+    text: "The stat() syscall is being called hundreds of times per PUT on nonexistent metadata paths"
+
+affected_nodes: auto
+
+oracle_profile: steady
+
+actions:
+  - type: gflag
+    service: mnemosyne
+    flag: validate_metadata_paths
+    value: true
+    nodes: all
+  - type: restart
+    service: mnemosyne
+    nodes: all
+
+verify:
+  - type: service_up
+    service: mnemosyne
+    nodes: all

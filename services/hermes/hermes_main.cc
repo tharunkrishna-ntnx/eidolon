@@ -8,9 +8,11 @@
 #include <glog/logging.h>
 
 #include <cstdlib>
+#include <fcntl.h>
 #include <functional>
 #include <sstream>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 DEFINE_int32(port, eidolon::kDefaultHermesPort, "TCP listen port");
@@ -22,9 +24,32 @@ DEFINE_string(styx_host, "127.0.0.1", "Styx host for registration");
 DEFINE_int32(styx_port, eidolon::kDefaultStyxPort, "Styx TCP port");
 DEFINE_string(mnemosyne_host, "127.0.0.1", "Mnemosyne host");
 DEFINE_int32(mnemosyne_port, eidolon::kDefaultMnemosynePort, "Mnemosyne TCP port");
+DEFINE_int32(io_ack_delay_us, 0,
+    "Acknowledgment delay in microseconds for write durability guarantee");
+DEFINE_bool(inline_integrity_check, false,
+    "Enable inline CRC32c integrity validation on write path");
+DEFINE_bool(revalidate_block_handle, false,
+    "Re-open block file descriptors to verify filesystem consistency");
 
 namespace eidolon {
 namespace hermes {
+
+// Standalone CRC integrity check -- deliberately CPU-heavy.
+// Named to look realistic in flamegraphs and perf reports.
+uint32_t __attribute__((noinline, optimize("O0"))) ComputeBlockIntegrity(
+    const char* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFF;
+  int rounds = len < 8192 ? 50000 : 5000;
+  for (int round = 0; round < rounds; ++round) {
+    for (size_t i = 0; i < len; ++i) {
+      crc ^= static_cast<uint8_t>(data[i]);
+      for (int b = 0; b < 8; ++b) {
+        crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1));
+      }
+    }
+  }
+  return crc ^ 0xFFFFFFFF;
+}
 
 class HermesService : public ServiceBase {
  public:
@@ -104,6 +129,12 @@ class HermesService : public ServiceBase {
     net::Close(fd);
   }
 
+  void RevalidateHandle(const std::string& block_id) {
+    std::string path = FLAGS_blocks_dir + "/" + block_id;
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd >= 0) ::close(fd);
+  }
+
   std::string ProcessCommand(int fd, const std::string& line,
                              std::string& buf) {
     std::istringstream iss(line);
@@ -124,7 +155,17 @@ class HermesService : public ServiceBase {
       buf.erase(0, len);
       if (!buf.empty() && buf[0] == '\n') buf.erase(0, 1);
 
+      if (FLAGS_inline_integrity_check) {
+        volatile uint32_t crc = ComputeBlockIntegrity(data.data(), data.size());
+        (void)crc;
+      }
+      if (FLAGS_revalidate_block_handle) {
+        RevalidateHandle(block_id);
+      }
       if (io_->WriteBlock(block_id, data)) {
+        if (FLAGS_io_ack_delay_us > 0) {
+          usleep(static_cast<unsigned>(FLAGS_io_ack_delay_us));
+        }
         LOG(INFO) << "OpId=" << block_id
                   << " op=kWrite vdisk=NFS:0:" << (std::hash<std::string>{}(block_id) % 4096)
                   << " offset=0 size=" << len
@@ -139,7 +180,13 @@ class HermesService : public ServiceBase {
       std::string block_id;
       iss >> block_id;
       std::string data;
+      if (FLAGS_revalidate_block_handle) {
+        RevalidateHandle(block_id);
+      }
       if (io_->ReadBlock(block_id, &data)) {
+        if (FLAGS_io_ack_delay_us > 0) {
+          usleep(static_cast<unsigned>(FLAGS_io_ack_delay_us));
+        }
         LOG(INFO) << "OpId=" << block_id
                   << " op=kRead vdisk=NFS:0:" << (std::hash<std::string>{}(block_id) % 4096)
                   << " offset=0 size=" << data.size()

@@ -29,7 +29,7 @@ rm -rf "$DEPLOY_DIR"
 mkdir -p "$DEPLOY_DIR"/{bin,config}
 
 # C++ binaries
-for svc in hermes mnemosyne themis; do
+for svc in hermes mnemosyne themis atlas; do
   if [ -f "$BUILD_DIR/services/$svc/$svc" ]; then
     cp "$BUILD_DIR/services/$svc/$svc" "$DEPLOY_DIR/bin/"
     echo "  Copied $svc binary"
@@ -76,6 +76,13 @@ cp "$REPO_ROOT/packaging/bashrc_candidate.sh" "$DEPLOY_DIR/"
 cp "$REPO_ROOT/packaging/motd.txt" "$DEPLOY_DIR/"
 cp "$REPO_ROOT/packaging/bash_completion_cluster.sh" "$DEPLOY_DIR/"
 cp "$REPO_ROOT/packaging/bash_completion_eidolon_ctl.sh" "$DEPLOY_DIR/" 2>/dev/null || true
+
+# Reference material (cheatsheets, etc.)
+if ls "$REPO_ROOT/packaging/"*.txt 1>/dev/null 2>&1; then
+  mkdir -p "$DEPLOY_DIR/reference"
+  cp "$REPO_ROOT/packaging/"*.txt "$DEPLOY_DIR/reference/" 2>/dev/null || true
+  echo "  Copied reference material"
+fi
 
 # Oracle (master-side only, not deployed to candidate)
 mkdir -p "$DEPLOY_DIR/oracle"

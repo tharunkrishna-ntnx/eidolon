@@ -12,6 +12,7 @@ constexpr uint16_t kDefaultPrometheusPort = 7102;
 constexpr uint16_t kDefaultMnemosynePort = 7200;
 constexpr uint16_t kDefaultHermesPort    = 7300;
 constexpr uint16_t kDefaultDiscoveryPort = 7100;
+constexpr uint16_t kDefaultAtlasPort     = 7500;
 
 // Simple length-prefixed wire format shared by all TCP services.
 //   [4-byte big-endian payload length][payload bytes]

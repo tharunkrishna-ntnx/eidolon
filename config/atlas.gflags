@@ -1,0 +1,9 @@
+# Atlas (VM lifecycle manager) configuration
+--port=7500
+--scheduling_depth=10
+--vm_table_size_mb=4
+--health_check_targets=hermes
+--scheduling_interval_ms=5000
+--table_lookups_per_cycle=100
+--styx_host=127.0.0.1
+--styx_port=7101

@@ -230,7 +230,7 @@ def main():
                         args.max_restart_attempts)
 
     # Register managed services (Styx is expected to already be running).
-    managed_services = ["mnemosyne", "hermes", "themis"]
+    managed_services = ["mnemosyne", "hermes", "themis", "atlas"]
     for svc in managed_services:
         bin_path = os.path.join(candidate_home, "bin", svc)
         if os.path.exists(bin_path):

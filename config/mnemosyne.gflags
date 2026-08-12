@@ -4,3 +4,5 @@
 --save_interval_sec=60
 --styx_host=127.0.0.1
 --styx_port=7101
+--sync_on_write=false
+--validate_metadata_paths=false
