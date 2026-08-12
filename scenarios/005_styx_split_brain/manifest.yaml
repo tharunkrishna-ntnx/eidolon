@@ -1,0 +1,46 @@
+name: "Styx Configuration Drift"
+id: "005_styx_split_brain"
+difficulty: hard
+category: coordination
+
+description: >
+  The Styx configuration store on one node has stale/incorrect cluster
+  metadata, causing services on that node to have an inconsistent view
+  of the cluster topology. The candidate must identify the inconsistency
+  by comparing Styx data across nodes, correct the configuration, and
+  restart Styx on the affected node so it re-syncs with the leader.
+
+symptoms:
+  - "Services on one node cannot discover peers correctly"
+  - "LOOKUP commands on the affected node return fewer endpoints"
+  - "Themis scans on the affected node show different results than other nodes"
+
+hints:
+  - level: 1
+    text: "Compare 'MEMBERS' output from Styx on different nodes using netcat"
+  - level: 2
+    text: "Connect to Styx on each node: echo 'MEMBERS' | nc <ip> 7101"
+  - level: 3
+    text: "The Styx data file may be corrupted. Check ~/data/styx/"
+  - level: 4
+    text: "Remove the stale Styx data file and restart Styx. It will re-sync from the leader."
+
+solution:
+  steps:
+    - "Remove ~/data/styx/styx_config.json on the affected node"
+    - "Run: cluster restart styx (or kill the styx process and let Prometheus restart it)"
+    - "Styx will rejoin the cluster and replicate from the current leader"
+
+affected_nodes: auto
+
+actions:
+  - type: gflag
+    service: styx
+    flag: node_timeout_sec
+    value: 999
+    nodes: affected
+
+verify:
+  - type: service_up
+    service: styx
+    nodes: all

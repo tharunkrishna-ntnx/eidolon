@@ -1,0 +1,58 @@
+name: "Mnemosyne OOM Under Load"
+id: "001_oom_mnemosyne"
+difficulty: easy
+category: memory
+
+description: >
+  Mnemosyne's memory limit is set too low. When Oracle drives sustained
+  writes, metadata accumulates until Mnemosyne exceeds its memory limit
+  and begins rejecting writes, eventually crashing. The candidate must
+  find the OOM errors in logs, raise the memory gflag, and restart the
+  service.
+
+symptoms:
+  - "cluster status shows mnemosyne DOWN on one or more nodes"
+  - "mnemosyne logs contain 'Memory limit exceeded' error messages"
+  - "Hermes logs show 'metadata store unavailable' errors"
+  - "Write operations to the cluster are failing"
+
+hints:
+  - level: 1
+    text: "Check which services are down using 'cluster status'"
+  - level: 2
+    text: "Look at the logs for the service that is down: ~/data/logs/"
+  - level: 3
+    text: "The mnemosyne logs mention memory limits. Check mnemosyne.gflags in ~/config/"
+  - level: 4
+    text: "Raise the --memory_limit_mb flag to at least 256 and restart: cluster restart mnemosyne"
+
+solution:
+  steps:
+    - "Edit ~/config/mnemosyne.gflags, raise --memory_limit_mb to >= 256"
+    - "Run: cluster restart mnemosyne"
+
+affected_nodes: auto
+
+oracle_profile: burst
+oracle_overrides:
+  write_iops: 3000
+  target_nodes: affected
+
+actions:
+  - type: gflag
+    service: mnemosyne
+    flag: memory_limit_mb
+    value: 8
+    nodes: affected
+  - type: restart
+    service: mnemosyne
+    nodes: affected
+
+verify:
+  - type: gflag_gte
+    service: mnemosyne
+    flag: memory_limit_mb
+    value: 256
+  - type: service_up
+    service: mnemosyne
+    nodes: all

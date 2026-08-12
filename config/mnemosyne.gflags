@@ -1,0 +1,6 @@
+# Mnemosyne (metadata store) configuration
+--memory_limit_mb=256
+--port=7200
+--save_interval_sec=60
+--styx_host=127.0.0.1
+--styx_port=7101

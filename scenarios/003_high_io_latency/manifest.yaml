@@ -1,0 +1,54 @@
+name: "High I/O Latency Under Burst Load"
+id: "003_high_io_latency"
+difficulty: medium
+category: performance
+
+description: >
+  The cluster is experiencing high I/O latency because the Oracle is
+  sending burst-level traffic while Hermes is configured with too few
+  I/O threads. The candidate must identify the bottleneck by examining
+  Hermes stats and logs, increase the io_threads gflag, and restart
+  Hermes to resolve the latency.
+
+symptoms:
+  - "I/O operations are slow or timing out"
+  - "Hermes logs show request queue buildup"
+  - "Hermes STATS show high write/read counts but the system feels slow"
+
+hints:
+  - level: 1
+    text: "Check Hermes stats: connect to port 7300 and send 'STATS'"
+  - level: 2
+    text: "Look at the hermes.gflags for thread-related settings"
+  - level: 3
+    text: "The --io_threads flag is set very low. Increase it to handle the load."
+  - level: 4
+    text: "Set --io_threads to at least 8 in ~/config/hermes.gflags and restart hermes"
+
+solution:
+  steps:
+    - "Edit ~/config/hermes.gflags, raise --io_threads to >= 8"
+    - "Run: cluster restart hermes"
+
+affected_nodes: auto
+
+oracle_profile: burst
+
+actions:
+  - type: gflag
+    service: hermes
+    flag: io_threads
+    value: 1
+    nodes: affected
+  - type: restart
+    service: hermes
+    nodes: affected
+
+verify:
+  - type: gflag_gte
+    service: hermes
+    flag: io_threads
+    value: 4
+  - type: service_up
+    service: hermes
+    nodes: all

@@ -1,0 +1,24 @@
+[users]
+master = scorch
+candidate = ember
+
+[network]
+discovery_port = 7100
+styx_port = 7101
+prometheus_port = 7102
+mnemosyne_port = 7200
+hermes_port = 7300
+oracle_port = 7400
+
+[auth]
+# sudo password for switching between master/candidate users.
+# Copy this file to eidolon.conf and fill in your value.
+sudo_pass =
+
+[limits]
+# Oracle will pause writes when total storage exceeds these thresholds.
+hermes_storage_gb = 40
+mnemosyne_storage_gb = 20
+
+[build]
+static_link = true

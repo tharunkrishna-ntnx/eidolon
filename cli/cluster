@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""cluster -- CLI for managing Eidolon cluster services.
+
+Usage:
+  cluster status              Show cluster-wide service status
+  cluster start [service]     Start all services or a specific one
+  cluster stop [service]      Stop all services or a specific one
+  cluster restart [service]   Restart all services or a specific one
+  cluster members             Show cluster node membership
+  cluster services            Show registered service endpoints
+"""
+
+import os
+import socket
+import sys
+
+PROMETHEUS_SOCKET = os.path.join(
+    os.path.expanduser("~"), "tmp", "prometheus.sock"
+)
+
+
+def send_command(cmd):
+    """Send a command to the local Prometheus via Unix socket."""
+    if not os.path.exists(PROMETHEUS_SOCKET):
+        print("ERROR: Prometheus is not running (socket not found).",
+              file=sys.stderr)
+        print(f"  Expected: {PROMETHEUS_SOCKET}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(10)
+            s.connect(PROMETHEUS_SOCKET)
+            s.sendall(cmd.encode("utf-8"))
+            s.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                chunks.append(data.decode("utf-8"))
+            return "".join(chunks)
+    except (OSError, socket.timeout) as e:
+        print(f"ERROR: Cannot communicate with Prometheus: {e}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def format_status(raw):
+    """Pretty-print the status response."""
+    lines = raw.strip().split("\n")
+    if not lines:
+        print("No status information available.")
+        return
+
+    print()
+    for line in lines:
+        line = line.strip()
+        if line.startswith("CLUSTER_STATUS"):
+            ip = line.split(None, 1)[1] if len(line.split()) > 1 else "?"
+            print(f"  Cluster Status (node: {ip})")
+            print(f"  {'─' * 50}")
+        elif line.startswith("MEMBERS"):
+            count = line.split()[1] if len(line.split()) > 1 else "?"
+            print(f"\n  Members ({count}):")
+        elif line.startswith("LOCAL_SERVICES"):
+            count = line.split()[1] if len(line.split()) > 1 else "?"
+            print(f"\n  Services ({count}):")
+            print(f"  {'Service':<15s} {'Status':<8s} {'PID':<10s} {'Restarts'}")
+            print(f"  {'─' * 50}")
+        elif line.strip().startswith(("mnemosyne", "hermes", "themis",
+                                      "styx", "prometheus")):
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                name = parts[0]
+                status = parts[1]
+                rest = " ".join(parts[2:])
+                # Colour the status.
+                if status == "UP":
+                    status_str = "\033[32mUP\033[0m"
+                elif status == "DOWN":
+                    status_str = "\033[31mDOWN\033[0m"
+                else:
+                    status_str = status
+                # Extract pid and restarts.
+                pid = "-"
+                restarts = "0"
+                for p in parts:
+                    if p.startswith("pid="):
+                        pid = p.split("=")[1]
+                    elif p.startswith("restarts="):
+                        restarts = p.split("=")[1]
+                print(f"  {name:<15s} {status_str:<17s} {pid:<10s} {restarts}")
+            else:
+                print(f"  {line.strip()}")
+        else:
+            if line.strip():
+                print(f"  {line.strip()}")
+    print()
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    cmd = sys.argv[1].lower()
+    arg = sys.argv[2] if len(sys.argv) > 2 else ""
+
+    if cmd == "status":
+        raw = send_command("status")
+        format_status(raw)
+
+    elif cmd in ("start", "stop", "restart"):
+        payload = f"{cmd} {arg}".strip()
+        raw = send_command(payload)
+        action = {"start": "Starting", "stop": "Stopping",
+                  "restart": "Restarting"}[cmd]
+        target = arg if arg else "all services"
+        if "OK" in raw:
+            print(f"{action} {target}... done.")
+        else:
+            print(f"{action} {target}... {raw.strip()}")
+
+    elif cmd == "members":
+        raw = send_command("members")
+        print(raw.rstrip())
+
+    elif cmd == "services":
+        raw = send_command("services")
+        print(raw.rstrip())
+
+    elif cmd in ("help", "--help", "-h"):
+        print(__doc__)
+
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

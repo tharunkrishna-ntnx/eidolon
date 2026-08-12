@@ -1,0 +1,673 @@
+#!/usr/bin/env python3
+"""eidolon-ctl -- Interviewer control CLI for Eidolon.
+
+Usage:
+  eidolon-ctl scenarios list                     List available scenarios
+  eidolon-ctl scenarios info <id>                Show scenario details
+  eidolon-ctl scenarios apply <id>               Apply a scenario (inject fault)
+  eidolon-ctl scenarios hint <id>                Show next progressive hint
+  eidolon-ctl scenarios verify <id>              Check if candidate resolved it
+  eidolon-ctl scenarios reset                    Reset cluster to healthy state
+
+  eidolon-ctl cluster status                     Show cluster-wide service health
+  eidolon-ctl oracle start                       Start Oracle I/O orchestrator
+  eidolon-ctl oracle stop                        Stop Oracle
+  eidolon-ctl oracle status                      Show Oracle workload status
+  eidolon-ctl oracle profile <name>              Switch Oracle profile
+  eidolon-ctl oracle reset                       Reset Oracle to default profile
+"""
+
+import configparser
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+
+def find_repo_root():
+    """Walk up from this script to find the repo root (has eidolon.conf)."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(10):
+        if os.path.exists(os.path.join(d, "eidolon.conf")):
+            return d
+        d = os.path.dirname(d)
+    print("ERROR: Cannot find eidolon.conf", file=sys.stderr)
+    sys.exit(1)
+
+
+REPO_ROOT = find_repo_root()
+SCENARIOS_DIR = os.path.join(REPO_ROOT, "scenarios")
+
+
+def load_conf():
+    conf = configparser.ConfigParser()
+    conf.read(os.path.join(REPO_ROOT, "eidolon.conf"))
+    return conf
+
+
+def get_sudo_pass():
+    conf = load_conf()
+    return conf.get("auth", "sudo_pass", fallback="")
+
+
+def oracle_command(cmd):
+    """Send a command to the Oracle control port."""
+    conf = load_conf()
+    port = conf.getint("network", "oracle_port", fallback=7400)
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+            s.sendall(cmd.encode("utf-8"))
+            s.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                chunks.append(data.decode("utf-8"))
+            return "".join(chunks)
+    except (OSError, socket.timeout):
+        return "ERROR: Cannot reach Oracle"
+
+
+def styx_command(cmd):
+    """Send a command to the local Styx."""
+    conf = load_conf()
+    port = conf.getint("network", "styx_port", fallback=7101)
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+            s.sendall(cmd.encode("utf-8"))
+            s.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                data = s.recv(4096)
+                if not data:
+                    break
+                chunks.append(data.decode("utf-8"))
+            return "".join(chunks)
+    except (OSError, socket.timeout):
+        return "ERROR: Cannot reach Styx"
+
+
+def get_cluster_members():
+    """Get list of cluster member IPs from Styx."""
+    resp = styx_command("MEMBERS\n")
+    members = []
+    for line in resp.strip().split("\n"):
+        parts = line.split()
+        if parts and parts[0][0].isdigit():
+            members.append(parts[0])
+    return members
+
+
+def load_manifest(scenario_id):
+    """Load a scenario manifest.yaml."""
+    scenario_dir = os.path.join(SCENARIOS_DIR, scenario_id)
+    manifest_path = os.path.join(scenario_dir, "manifest.yaml")
+
+    if not os.path.exists(manifest_path):
+        print(f"ERROR: Scenario '{scenario_id}' not found.", file=sys.stderr)
+        print(f"  Looked in: {manifest_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if HAS_YAML:
+        with open(manifest_path) as f:
+            return yaml.safe_load(f)
+    else:
+        # Minimal fallback parser for YAML-like files.
+        print("WARNING: PyYAML not installed, manifest parsing may be limited",
+              file=sys.stderr)
+        data = {}
+        with open(manifest_path) as f:
+            for line in f:
+                line = line.strip()
+                if ":" in line and not line.startswith("-"):
+                    key, _, val = line.partition(":")
+                    data[key.strip()] = val.strip().strip('"').strip("'")
+        return data
+
+
+def list_scenarios():
+    """List all available scenarios."""
+    if not os.path.isdir(SCENARIOS_DIR):
+        print("No scenarios directory found.")
+        return
+
+    scenarios = []
+    for entry in sorted(os.listdir(SCENARIOS_DIR)):
+        manifest_path = os.path.join(SCENARIOS_DIR, entry, "manifest.yaml")
+        if os.path.exists(manifest_path):
+            manifest = load_manifest(entry)
+            scenarios.append({
+                "id": entry,
+                "name": manifest.get("name", entry),
+                "difficulty": manifest.get("difficulty", "?"),
+                "category": manifest.get("category", "?"),
+            })
+
+    if not scenarios:
+        print("No scenarios found in", SCENARIOS_DIR)
+        return
+
+    print()
+    print(f"  {'ID':<30s} {'Name':<35s} {'Difficulty':<12s} {'Category'}")
+    print(f"  {'─' * 90}")
+    for s in scenarios:
+        print(f"  {s['id']:<30s} {s['name']:<35s} {s['difficulty']:<12s} {s['category']}")
+    print()
+
+
+def show_scenario_info(scenario_id):
+    """Display detailed information about a scenario."""
+    manifest = load_manifest(scenario_id)
+    print()
+    print(f"  Scenario: {manifest.get('name', scenario_id)}")
+    print(f"  ID:         {manifest.get('id', scenario_id)}")
+    print(f"  Difficulty: {manifest.get('difficulty', '?')}")
+    print(f"  Category:   {manifest.get('category', '?')}")
+    print()
+    desc = manifest.get("description", "No description.")
+    print(f"  Description:")
+    for line in desc.strip().split("\n"):
+        print(f"    {line.strip()}")
+    print()
+
+    symptoms = manifest.get("symptoms", [])
+    if symptoms:
+        print(f"  Symptoms:")
+        for s in symptoms:
+            print(f"    - {s}")
+        print()
+
+    oracle_profile = manifest.get("oracle_profile")
+    if oracle_profile:
+        print(f"  Oracle Profile: {oracle_profile}")
+    oracle_overrides = manifest.get("oracle_overrides")
+    if oracle_overrides:
+        print(f"  Oracle Overrides: {json.dumps(oracle_overrides)}")
+    print()
+
+
+# Track hint progression per scenario.
+_hint_index = {}
+
+
+def show_hint(scenario_id):
+    """Show the next progressive hint for a scenario."""
+    manifest = load_manifest(scenario_id)
+    hints = manifest.get("hints", [])
+    if not hints:
+        print("No hints available for this scenario.")
+        return
+
+    idx = _hint_index.get(scenario_id, 0)
+    if idx >= len(hints):
+        print("All hints have been shown.")
+        return
+
+    hint = hints[idx]
+    if isinstance(hint, dict):
+        level = hint.get("level", idx + 1)
+        text = hint.get("text", "")
+    else:
+        level = idx + 1
+        text = str(hint)
+
+    print(f"\n  Hint {level}: {text}\n")
+    _hint_index[scenario_id] = idx + 1
+
+
+def remote_exec(ip, user, cmd):
+    """Run a command on a remote node as the given user.
+
+    SSHes as the master user and uses sudo to run the command as the
+    target user, piping the sudo password from eidolon.conf.
+    """
+    conf = load_conf()
+    master = conf.get("users", "master", fallback="scorch")
+    sudo_pass = get_sudo_pass()
+
+    if sudo_pass:
+        wrapped = (f"echo '{sudo_pass}' | "
+                   f"sudo -S -u {user} bash -c '{cmd}'")
+    else:
+        wrapped = f"sudo -u {user} bash -c '{cmd}'"
+
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+         f"{master}@{ip}", wrapped],
+        capture_output=True, text=True, timeout=30,
+    )
+    return result.stdout, result.stderr, result.returncode
+
+
+def sudo_local(cmd):
+    """Run a command locally with the configured sudo password."""
+    sudo_pass = get_sudo_pass()
+    if sudo_pass:
+        full = f"echo '{sudo_pass}' | sudo -S bash -c '{cmd}'"
+    else:
+        full = f"sudo bash -c '{cmd}'"
+    return os.system(full + " 2>/dev/null")
+
+
+def apply_scenario(scenario_id):
+    """Apply a scenario's fault injection."""
+    manifest = load_manifest(scenario_id)
+    conf = load_conf()
+    candidate_user = conf.get("users", "candidate", fallback="ember")
+    members = get_cluster_members()
+
+    if not members:
+        print("ERROR: No cluster members found.  Is Styx running?",
+              file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n  Applying scenario: {manifest.get('name', scenario_id)}")
+    print(f"  Cluster members: {', '.join(members)}")
+
+    # Determine affected nodes.
+    affected = manifest.get("affected_nodes", "auto")
+    if affected == "auto":
+        affected_ips = [members[0]] if members else []
+    elif isinstance(affected, list):
+        affected_ips = [members[i - 1] for i in affected
+                        if 0 < i <= len(members)]
+    else:
+        affected_ips = members[:1]
+
+    print(f"  Affected nodes: {', '.join(affected_ips)}")
+
+    # Execute actions.
+    actions = manifest.get("actions", [])
+    for action in actions:
+        action_type = action.get("type", "")
+        service = action.get("service", "")
+        nodes = action.get("nodes", "affected")
+        target_ips = affected_ips if nodes == "affected" else members
+
+        if action_type == "gflag":
+            flag = action["flag"]
+            value = action["value"]
+            gflags_file = f"/home/{candidate_user}/config/{service}.gflags"
+            for ip in target_ips:
+                print(f"  [{ip}] Setting --{flag}={value} in {service}.gflags")
+                # Read, modify, write the gflags file.
+                cmd = (f"sed -i 's/--{flag}=.*$/--{flag}={value}/' "
+                       f"{gflags_file} || "
+                       f"echo '--{flag}={value}' >> {gflags_file}")
+                remote_exec(ip, candidate_user, cmd)
+
+        elif action_type == "restart":
+            for ip in target_ips:
+                print(f"  [{ip}] Restarting {service}")
+                sock_path = f"/home/{candidate_user}/tmp/prometheus.sock"
+                cmd = (f"python3 -c \""
+                       f"import socket; "
+                       f"s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); "
+                       f"s.connect('{sock_path}'); "
+                       f"s.sendall(b'restart {service}'); "
+                       f"s.shutdown(socket.SHUT_WR); "
+                       f"print(s.recv(256).decode()); "
+                       f"s.close()\"")
+                remote_exec(ip, candidate_user, cmd)
+
+        elif action_type == "kill":
+            for ip in target_ips:
+                print(f"  [{ip}] Killing {service}")
+                pid_file = f"/home/{candidate_user}/tmp/{service}.pid"
+                cmd = f"kill -9 $(cat {pid_file} 2>/dev/null) 2>/dev/null || true"
+                remote_exec(ip, candidate_user, cmd)
+
+        elif action_type == "corrupt_config":
+            for ip in target_ips:
+                gflags_file = f"/home/{candidate_user}/config/{service}.gflags"
+                print(f"  [{ip}] Corrupting {service} config")
+                cmd = f"echo 'CORRUPTED_LINE' >> {gflags_file}"
+                remote_exec(ip, candidate_user, cmd)
+
+    # Switch Oracle profile if specified.
+    oracle_profile = manifest.get("oracle_profile")
+    if oracle_profile:
+        print(f"  Switching Oracle to profile: {oracle_profile}")
+        resp = oracle_command(f"PROFILE {oracle_profile}")
+        print(f"    {resp.strip()}")
+
+    oracle_overrides = manifest.get("oracle_overrides")
+    if oracle_overrides:
+        overrides = dict(oracle_overrides)
+        if overrides.get("target_nodes") == "affected":
+            indices = [members.index(ip) + 1 for ip in affected_ips
+                       if ip in members]
+            overrides["target_nodes"] = indices
+        print(f"  Applying Oracle overrides: {json.dumps(overrides)}")
+        resp = oracle_command(f"OVERRIDE {json.dumps(overrides)}")
+        print(f"    {resp.strip()}")
+
+    # Reset hint counter.
+    _hint_index[scenario_id] = 0
+
+    print(f"\n  Scenario applied successfully.\n")
+
+
+def verify_scenario(scenario_id):
+    """Verify that a candidate has resolved the scenario."""
+    manifest = load_manifest(scenario_id)
+    conf = load_conf()
+    candidate_user = conf.get("users", "candidate", fallback="ember")
+    members = get_cluster_members()
+    verify_checks = manifest.get("verify", [])
+
+    if not verify_checks:
+        print("No verification checks defined for this scenario.")
+        return
+
+    print(f"\n  Verifying scenario: {manifest.get('name', scenario_id)}")
+    all_pass = True
+
+    for check in verify_checks:
+        check_type = check.get("type", "")
+        service = check.get("service", "")
+        nodes = check.get("nodes", "all")
+        target_ips = members if nodes == "all" else members[:1]
+
+        if check_type == "gflag_gte":
+            flag = check["flag"]
+            expected = check["value"]
+            for ip in target_ips:
+                gflags_file = f"/home/{candidate_user}/config/{service}.gflags"
+                cmd = f"grep -- '--{flag}=' {gflags_file} | sed 's/.*=//'"
+                stdout, _, _ = remote_exec(ip, candidate_user, cmd)
+                try:
+                    actual = int(stdout.strip())
+                except (ValueError, TypeError):
+                    actual = 0
+                if actual >= expected:
+                    print(f"  [PASS] {ip}: --{flag}={actual} >= {expected}")
+                else:
+                    print(f"  [FAIL] {ip}: --{flag}={actual} < {expected}")
+                    all_pass = False
+
+        elif check_type == "service_up":
+            for ip in target_ips:
+                pid_file = f"/home/{candidate_user}/tmp/{service}.pid"
+                cmd = (f"test -f {pid_file} && "
+                       f"kill -0 $(cat {pid_file}) 2>/dev/null && "
+                       f"echo UP || echo DOWN")
+                stdout, _, _ = remote_exec(ip, candidate_user, cmd)
+                status = stdout.strip()
+                if status == "UP":
+                    print(f"  [PASS] {ip}: {service} is UP")
+                else:
+                    print(f"  [FAIL] {ip}: {service} is {status}")
+                    all_pass = False
+
+    print()
+    if all_pass:
+        print("  Result: ALL CHECKS PASSED")
+    else:
+        print("  Result: SOME CHECKS FAILED")
+    print()
+
+
+def reset_cluster():
+    """Reset the cluster to a healthy state."""
+    conf = load_conf()
+    candidate_user = conf.get("users", "candidate", fallback="ember")
+    members = get_cluster_members()
+    deploy_dir = os.path.join(REPO_ROOT, "build", "deploy")
+
+    print("\n  Resetting cluster to healthy state...")
+
+    if not os.path.isdir(deploy_dir):
+        print("  WARNING: Deploy directory not found, skipping config restore")
+    else:
+        config_src = os.path.join(deploy_dir, "config")
+        master_user = conf.get("users", "master", fallback="scorch")
+        sudo_pass = get_sudo_pass()
+        sudo_pfx = (f"echo '{sudo_pass}' | sudo -S" if sudo_pass
+                     else "sudo")
+        for ip in members:
+            print(f"  [{ip}] Restoring default configs")
+            if ip == get_local_ip():
+                sudo_local(
+                    f"rsync -a {config_src}/ "
+                    f"/home/{candidate_user}/config/ && "
+                    f"chown -R {candidate_user}:{candidate_user} "
+                    f"/home/{candidate_user}/config/"
+                )
+            else:
+                os.system(
+                    f"rsync -az {config_src}/ "
+                    f"{master_user}@{ip}:/tmp/_eidolon_config/"
+                )
+                subprocess.run(
+                    ["ssh", "-o", "BatchMode=yes",
+                     "-o", "StrictHostKeyChecking=no",
+                     f"{master_user}@{ip}",
+                     f"{sudo_pfx} bash -c '"
+                     f"rsync -a /tmp/_eidolon_config/ "
+                     f"/home/{candidate_user}/config/ && "
+                     f"chown -R {candidate_user}:{candidate_user} "
+                     f"/home/{candidate_user}/config/ && "
+                     f"rm -rf /tmp/_eidolon_config'"],
+                    capture_output=True, timeout=30,
+                )
+
+    # Clear Hermes block data and Mnemosyne metadata on every node so
+    # a reset can recover from a full-disk situation.
+    cand_home = f"/home/{candidate_user}"
+    data_dirs_to_purge = [
+        f"{cand_home}/data/hermes/blocks",
+        f"{cand_home}/data/mnemosyne",
+    ]
+    for ip in members:
+        print(f"  [{ip}] Clearing Hermes blocks and Mnemosyne data")
+        purge_cmd = " && ".join(
+            f"rm -rf {d} && mkdir -p {d} && "
+            f"chown {candidate_user}:{candidate_user} {d}"
+            for d in data_dirs_to_purge
+        )
+        if ip == get_local_ip():
+            sudo_local(purge_cmd)
+        else:
+            remote_exec(ip, candidate_user, purge_cmd)
+
+    # Restart all services on all nodes.
+    for ip in members:
+        print(f"  [{ip}] Restarting all services")
+        sock_path = f"/home/{candidate_user}/tmp/prometheus.sock"
+        cmd = (f"python3 -c \""
+               f"import socket; "
+               f"s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); "
+               f"s.connect('{sock_path}'); "
+               f"s.sendall(b'restart'); "
+               f"s.shutdown(socket.SHUT_WR); "
+               f"print(s.recv(256).decode()); "
+               f"s.close()\"")
+        remote_exec(ip, candidate_user, cmd)
+
+    # Reset Oracle.
+    print("  Resetting Oracle to default profile")
+    resp = oracle_command("RESET")
+    print(f"    {resp.strip()}")
+
+    _hint_index.clear()
+    print("\n  Cluster reset complete.\n")
+
+
+def oracle_start():
+    """Start the Oracle process in the background."""
+    conf = load_conf()
+    port = conf.getint("network", "oracle_port", fallback=7400)
+    styx_port = conf.getint("network", "styx_port", fallback=7101)
+
+    # Check if already running.
+    pid_file = os.path.join(REPO_ROOT, "build", "oracle.pid")
+    if os.path.exists(pid_file):
+        try:
+            pid = int(open(pid_file).read().strip())
+            os.kill(pid, 0)
+            print(f"Oracle is already running (pid={pid}).")
+            return
+        except (OSError, ValueError):
+            os.remove(pid_file)
+
+    oracle_script = os.path.join(REPO_ROOT, "services", "oracle", "oracle.py")
+    # Fall back to deploy copy if source isn't available.
+    if not os.path.exists(oracle_script):
+        oracle_script = os.path.join(REPO_ROOT, "build", "deploy",
+                                     "oracle", "oracle.py")
+    if not os.path.exists(oracle_script):
+        print("ERROR: Cannot find oracle.py", file=sys.stderr)
+        sys.exit(1)
+
+    oracle_config = os.path.join(REPO_ROOT, "services", "oracle", "oracle.yaml")
+    if not os.path.exists(oracle_config):
+        oracle_config = os.path.join(REPO_ROOT, "build", "deploy",
+                                     "oracle", "oracle.yaml")
+
+    hermes_limit_gb = conf.getint("limits", "hermes_storage_gb", fallback=40)
+    mnemosyne_limit_gb = conf.getint("limits", "mnemosyne_storage_gb",
+                                      fallback=20)
+
+    log_dir = os.path.join(REPO_ROOT, "build", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    log_file = os.path.join(log_dir, "oracle_stdout.log")
+    cmd = [
+        sys.executable, oracle_script,
+        f"--port={port}",
+        f"--styx_port={styx_port}",
+        f"--config={oracle_config}",
+        f"--log_dir={log_dir}",
+        f"--hermes_limit_gb={hermes_limit_gb}",
+        f"--mnemosyne_limit_gb={mnemosyne_limit_gb}",
+    ]
+
+    with open(log_file, "a") as lf:
+        proc = subprocess.Popen(
+            cmd, stdout=lf, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    with open(pid_file, "w") as f:
+        f.write(str(proc.pid) + "\n")
+
+    print(f"Oracle started (pid={proc.pid}, port={port}).")
+    print(f"  Log: {log_file}")
+
+
+def oracle_stop():
+    """Stop the Oracle process."""
+    pid_file = os.path.join(REPO_ROOT, "build", "oracle.pid")
+    if not os.path.exists(pid_file):
+        print("Oracle is not running (no pid file).")
+        return
+
+    try:
+        pid = int(open(pid_file).read().strip())
+        os.kill(pid, signal.SIGTERM)
+        print(f"Oracle stopped (pid={pid}).")
+    except (OSError, ValueError) as e:
+        print(f"Could not stop Oracle: {e}")
+    finally:
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return "127.0.0.1"
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    group = sys.argv[1].lower()
+    cmd = sys.argv[2].lower() if len(sys.argv) > 2 else ""
+    arg = sys.argv[3] if len(sys.argv) > 3 else ""
+
+    if group == "scenarios":
+        if cmd == "list":
+            list_scenarios()
+        elif cmd == "info" and arg:
+            show_scenario_info(arg)
+        elif cmd == "apply" and arg:
+            apply_scenario(arg)
+        elif cmd == "hint" and arg:
+            show_hint(arg)
+        elif cmd == "verify" and arg:
+            verify_scenario(arg)
+        elif cmd == "reset":
+            reset_cluster()
+        else:
+            print("Usage: eidolon-ctl scenarios "
+                  "{list|info|apply|hint|verify|reset} [id]")
+            sys.exit(1)
+
+    elif group == "cluster":
+        if cmd == "status":
+            conf = load_conf()
+            candidate_user = conf.get("users", "candidate", fallback="ember")
+            sock_path = (f"/home/{candidate_user}/tmp/prometheus.sock")
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    s.connect(sock_path)
+                    s.sendall(b"status")
+                    s.shutdown(socket.SHUT_WR)
+                    chunks = []
+                    while True:
+                        data = s.recv(4096)
+                        if not data:
+                            break
+                        chunks.append(data.decode())
+                    print("".join(chunks))
+            except OSError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+
+    elif group == "oracle":
+        if cmd == "start":
+            oracle_start()
+        elif cmd == "stop":
+            oracle_stop()
+        elif cmd == "status":
+            print(oracle_command("STATUS"))
+        elif cmd == "profile" and arg:
+            print(oracle_command(f"PROFILE {arg}"))
+        elif cmd == "reset":
+            print(oracle_command("RESET"))
+        elif cmd == "profiles":
+            print(oracle_command("PROFILES"))
+        else:
+            print("Usage: eidolon-ctl oracle "
+                  "{start|stop|status|profile|reset|profiles}")
+            sys.exit(1)
+
+    elif group in ("help", "--help", "-h"):
+        print(__doc__)
+
+    else:
+        print(f"Unknown command group: {group}", file=sys.stderr)
+        print(__doc__)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

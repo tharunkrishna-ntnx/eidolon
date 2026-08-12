@@ -1,0 +1,6 @@
+# Prometheus (lifecycle manager) configuration
+--port=7102
+--health_check_interval_sec=10
+--max_restart_attempts=3
+--styx_host=127.0.0.1
+--styx_port=7101
