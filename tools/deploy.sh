@@ -31,9 +31,37 @@ CAND_USER="$EIDOLON_CANDIDATE_USER"
 CAND_HOME="$(candidate_home)"
 LOCAL_IP="$(hostname -I | awk '{print $1}')"
 
+install_sudoers() {
+  local ip="$1"
+  local sudoers_content
+  sudoers_content="$(cat <<'SUDOEOF'
+# Eidolon: allow candidate user to run perf/BPF tracing tools only
+CANDIDATE_USER ALL=(root) NOPASSWD: /usr/bin/perf *, /usr/bin/perf, \
+    /usr/bin/strace *, /usr/bin/strace, \
+    /usr/bin/bpftrace *, /usr/bin/bpftrace, \
+    /usr/sbin/biolatency-bpfcc *, /usr/sbin/biolatency-bpfcc, \
+    /usr/sbin/offcputime-bpfcc *, /usr/sbin/offcputime-bpfcc, \
+    /usr/sbin/tcpconnect-bpfcc *, /usr/sbin/tcpconnect-bpfcc, \
+    /usr/sbin/opensnoop-bpfcc *, /usr/sbin/opensnoop-bpfcc
+SUDOEOF
+)"
+  sudoers_content="${sudoers_content//CANDIDATE_USER/$CAND_USER}"
+  local b64
+  b64="$(echo "$sudoers_content" | base64 -w0)"
+  local cmd="echo $b64 | base64 -d > /etc/sudoers.d/eidolon-training && chmod 0440 /etc/sudoers.d/eidolon-training"
+
+  if [ "$ip" = "$LOCAL_IP" ] || [ "$ip" = "127.0.0.1" ]; then
+    sudo bash -c "$cmd" 2>/dev/null
+  else
+    remote_master "$ip" "sudo bash -c '$cmd'" 2>/dev/null
+  fi
+}
+
 deploy_to_node() {
   local ip="$1"
   echo "Deploying to $ip ..."
+
+  install_sudoers "$ip"
 
   if [ "$ip" = "$LOCAL_IP" ] || [ "$ip" = "127.0.0.1" ]; then
     # Local deployment via sudo.
@@ -43,9 +71,14 @@ deploy_to_node() {
     sudo cp "$DEPLOY_DIR/.eidolon_version" "$CAND_HOME/.eidolon_version"
     sudo cp "$DEPLOY_DIR/bashrc_candidate.sh" "$CAND_HOME/.eidolon_bashrc"
     sudo cp "$DEPLOY_DIR/bash_completion_cluster.sh" "$CAND_HOME/.bash_completion_cluster" 2>/dev/null || true
+    if [ -d "$DEPLOY_DIR/reference" ]; then
+      sudo mkdir -p "$CAND_HOME/reference"
+      sudo rsync -a "$DEPLOY_DIR/reference/" "$CAND_HOME/reference/"
+    fi
     sudo chown -R "$CAND_USER:$CAND_USER" "$CAND_HOME/bin" "$CAND_HOME/config" \
       "$CAND_HOME/lib" "$CAND_HOME/.eidolon_version" "$CAND_HOME/.eidolon_bashrc" \
       "$CAND_HOME/.bash_completion_cluster" 2>/dev/null
+    sudo chown -R "$CAND_USER:$CAND_USER" "$CAND_HOME/reference" 2>/dev/null || true
     echo "  Local deploy complete."
   else
     # Remote deployment: rsync to master user's temp, then sudo-copy.
@@ -61,9 +94,14 @@ deploy_to_node() {
       sudo cp ${tmp_dir}/.eidolon_version $CAND_HOME/.eidolon_version && \
       sudo cp ${tmp_dir}/bashrc_candidate.sh $CAND_HOME/.eidolon_bashrc && \
       sudo cp ${tmp_dir}/bash_completion_cluster.sh $CAND_HOME/.bash_completion_cluster 2>/dev/null; \
+      if [ -d ${tmp_dir}/reference ]; then \
+        sudo mkdir -p $CAND_HOME/reference && \
+        sudo rsync -a ${tmp_dir}/reference/ $CAND_HOME/reference/; \
+      fi; \
       sudo chown -R $CAND_USER:$CAND_USER $CAND_HOME/bin $CAND_HOME/config \
         $CAND_HOME/lib $CAND_HOME/.eidolon_version $CAND_HOME/.eidolon_bashrc \
         $CAND_HOME/.bash_completion_cluster 2>/dev/null && \
+      sudo chown -R $CAND_USER:$CAND_USER $CAND_HOME/reference 2>/dev/null; \
       rm -rf ${tmp_dir}"
     echo "  Remote deploy to $ip complete."
   fi
@@ -82,6 +120,9 @@ discover_nodes() {
     echo "$LOCAL_IP"
   fi
 }
+
+ensure_sudo_pass
+echo "$SUDO_PASS" | sudo -S -v 2>/dev/null
 
 echo "=== Eidolon Deploy ==="
 echo "Version: $(eidolon_version)"
