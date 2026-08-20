@@ -34,7 +34,7 @@ start_on_node() {
   }
 
   echo "[$ip] Creating data dirs..."
-  run "mkdir -p $CAND_HOME/data/{logs,styx,mnemosyne,hermes/blocks} $CAND_HOME/tmp"
+  run "mkdir -p $CAND_HOME/data/{logs,styx,mnemosyne,hermes/blocks,atlas} $CAND_HOME/tmp"
 
   echo "[$ip] Starting Styx..."
   run "nohup $CAND_HOME/bin/styx \

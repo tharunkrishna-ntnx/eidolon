@@ -1,0 +1,41 @@
+name: "netstat / ss socket analysis"
+id: M004_netstat
+difficulty: easy
+category: misc
+module: 3
+
+description: >
+  A process listens on 127.0.0.1:19080 and holds many ESTABLISHED localhost
+  connections to itself. Use ss (or netstat) to map the port to a PID.
+
+symptoms:
+  - "A listener is bound to TCP port 19080 on localhost"
+  - "Dozens of ESTABLISHED connections to that port"
+
+lab_instructions: |
+  1. Run 'ss -tlnp' (or 'netstat -tlnp') and find the listener on :19080.
+  2. Run 'ss -tnp dst :19080 or src :19080' and count ESTABLISHED sockets.
+  3. Map the port to a PID and process name.
+  4. Confirm with 'ls -l /proc/PID/fd | grep socket | wc -l'
+
+deliverable: "Listening address:port, PID, process name, and ESTABLISHED connection count"
+
+hints:
+  - level: 1
+    text: "ss -tlnp lists TCP listeners; look for port 19080."
+  - level: 2
+    text: "ss -tn dst :19080 shows connections targeting that port. Add -p for the process."
+  - level: 3
+    text: "The process comm is health-probe. It holds both the listen socket and the client sockets."
+
+processes:
+  - binary: health-probe
+    comm: health-probe
+    args: ["--port", "19080", "--clients", "40"]
+
+verify:
+  - type: process_running
+    comm: health-probe
+  - type: socket_count_gte
+    comm: health-probe
+    value: 40

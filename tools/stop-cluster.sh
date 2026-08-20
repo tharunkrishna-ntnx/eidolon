@@ -20,7 +20,7 @@ for f in CAND_HOME/tmp/*.pid; do
 done
 sleep 1
 # Forceful: kill any remaining service processes by name
-for proc in styx prometheus hermes mnemosyne themis; do
+for proc in styx prometheus hermes mnemosyne themis atlas; do
   pids=$(pgrep -u CAND_USER -x "$proc" 2>/dev/null || true)
   [ -n "$pids" ] && kill $pids 2>/dev/null || true
 done
@@ -30,7 +30,7 @@ for proc in styx prometheus; do
   [ -n "$pids" ] && kill $pids 2>/dev/null || true
 done
 sleep 1
-for proc in styx prometheus hermes mnemosyne themis; do
+for proc in styx prometheus hermes mnemosyne themis atlas; do
   pids=$(pgrep -u CAND_USER -x "$proc" 2>/dev/null || true)
   [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
 done

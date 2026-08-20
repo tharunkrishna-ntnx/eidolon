@@ -1,0 +1,41 @@
+name: "High CPU process"
+id: M001_high_cpu
+difficulty: easy
+category: misc
+module: 1
+
+description: >
+  A single user process is pinned to one CPU and spinning in a tight loop.
+  Use top and mpstat to identify the process, its PID, and which CPU is busy.
+
+symptoms:
+  - "One CPU core is saturated"
+  - "A user process named task-worker is near the top of the CPU sort in top"
+
+lab_instructions: |
+  1. Run 'top' and sort by CPU (Shift-P). Identify the hottest process.
+  2. Note its PID, USER, %CPU, and COMMAND.
+  3. Run 'mpstat -P ALL 1 5' and find which CPU has high %usr.
+  4. Confirm the process is pinned: 'taskset -cp PID'
+
+deliverable: "PID of the CPU hog, which CPU it is pinned to, and evidence from top and mpstat"
+
+hints:
+  - level: 1
+    text: "Start with top. Press Shift-P to sort by CPU percentage."
+  - level: 2
+    text: "mpstat -P ALL 1 5 shows per-CPU utilization; look for a core near 100% %usr."
+  - level: 3
+    text: "The process comm is task-worker. taskset -cp PID shows the affinity mask."
+
+processes:
+  - binary: task-worker
+    comm: task-worker
+    args: ["--cpus", "1", "--pin"]
+
+verify:
+  - type: process_running
+    comm: task-worker
+  - type: cpu_pct_gte
+    comm: task-worker
+    value: 80

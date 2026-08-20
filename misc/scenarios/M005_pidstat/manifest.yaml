@@ -1,0 +1,42 @@
+name: "pidstat per-process CPU and I/O"
+id: M005_pidstat
+difficulty: easy
+category: misc
+module: 4
+
+description: >
+  A worker alternates CPU bursts with append writes. Use pidstat to see
+  %CPU, kB_wr/s, and RSS for that PID in one tool.
+
+symptoms:
+  - "A process is both using CPU and writing to disk"
+  - "top alone does not make the I/O obvious"
+
+lab_instructions: |
+  1. Find the process (comm log-shipper) with top or pgrep.
+  2. Run 'pidstat -u -p PID 1 8' and note %CPU.
+  3. Run 'pidstat -d -p PID 1 8' and note kB_wr/s.
+  4. Run 'pidstat -r -p PID 1 5' for RSS / faults.
+  5. Optionally combine: 'pidstat -u -d -r -p PID 1 8'
+
+deliverable: "PID plus pidstat samples showing CPU%, write throughput, and RSS"
+
+hints:
+  - level: 1
+    text: "pidstat is in the sysstat package. -u is CPU, -d is I/O, -r is memory."
+  - level: 2
+    text: "pgrep -x log-shipper gives the PID. Then pidstat -u -d -r -p PID 1 8."
+  - level: 3
+    text: "You should see non-zero %CPU and non-zero kB_wr/s on the same PID."
+
+processes:
+  - binary: log-shipper
+    comm: log-shipper
+    args: ["--path", "data/log-shipper.dat", "--cpu-ms", "200", "--write-kb", "256"]
+
+verify:
+  - type: process_running
+    comm: log-shipper
+  - type: cpu_pct_gte
+    comm: log-shipper
+    value: 10

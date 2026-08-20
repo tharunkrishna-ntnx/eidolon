@@ -1,0 +1,39 @@
+name: "vmstat system-wide pressure"
+id: M006_vmstat
+difficulty: medium
+category: misc
+module: 4
+
+description: >
+  A process generates sequential disk I/O and page-touch traffic. Use vmstat
+  to read system-wide run-queue, CPU, and bi/bo columns, then contrast with
+  pidstat on the specific PID.
+
+symptoms:
+  - "vmstat shows elevated bi/bo and some user CPU"
+  - "A page-scanner process is responsible"
+
+lab_instructions: |
+  1. Run 'vmstat 1 10' and identify which columns moved vs idle.
+  2. Look at r (run queue), us (user CPU), bi/bo (blocks in/out).
+  3. Find the process with top / pgrep (comm page-scanner).
+  4. Run 'pidstat -u -d -p PID 1 5' to attribute the system-wide numbers.
+
+deliverable: "A vmstat excerpt plus the PID that explains the bi/bo and CPU columns"
+
+hints:
+  - level: 1
+    text: "vmstat 1 prints a new line every second. Ignore the first line (it is averages since boot)."
+  - level: 2
+    text: "bi/bo are block I/O; us is user-space CPU. r > 0 means runnable tasks."
+  - level: 3
+    text: "page-scanner is writing a wrapped file and mmap-touching pages. pidstat -d ties I/O to that PID."
+
+processes:
+  - binary: page-scanner
+    comm: page-scanner
+    args: ["--path", "data/page-scanner.dat", "--file-mb", "64", "--write-kb", "256", "--mmap"]
+
+verify:
+  - type: process_running
+    comm: page-scanner

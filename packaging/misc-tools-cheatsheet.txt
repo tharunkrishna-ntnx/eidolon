@@ -1,0 +1,68 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║  Misc tools quick reference  (top, mpstat, pidstat, vmstat, ss)    ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+  Cluster services (atlas, hermes, mnemosyne, themis, styx, prometheus)
+  may be running in the background.  For these labs, find the extra
+  process that is NOT one of those names.
+
+─── top ────────────────────────────────────────────────────────────────
+
+  top
+    Live process list.  Keys:
+      Shift-P   sort by CPU
+      Shift-M   sort by memory (RES)
+      H         toggle threads (one row per TID)
+      k         kill (do not use in these labs)
+      q         quit
+
+  top -H -p PID
+    Threads of one process only.
+
+─── mpstat (per-CPU) ───────────────────────────────────────────────────
+
+  mpstat -P ALL 1 5
+    One sample per second, 5 times, every CPU.
+    Look at %usr on a single core going near 100.
+
+─── pidstat (per-process) ──────────────────────────────────────────────
+
+  pidstat -u -p PID 1 8     CPU %
+  pidstat -d -p PID 1 8     disk kB_rd/s kB_wr/s
+  pidstat -r -p PID 1 8     RSS / minor-major faults
+  pidstat -t -p PID 1 5     per-thread CPU
+  pidstat -u -d -r -p PID 1 8
+    Combined CPU + I/O + memory.
+
+─── vmstat (system-wide) ───────────────────────────────────────────────
+
+  vmstat 1 10
+    Ignore the first line (averages since boot).
+    r    runnable tasks
+    us   user CPU
+    sy   system CPU
+    wa   I/O wait
+    bi   blocks in  (read)
+    bo   blocks out (write)
+    si/so  swap in/out (should stay 0 in these labs)
+
+─── iostat ─────────────────────────────────────────────────────────────
+
+  iostat -xz 1 8
+    Ignore the first sample.
+    wkB/s, w/s, await, %util  — write traffic and latency.
+
+─── ss / netstat ───────────────────────────────────────────────────────
+
+  ss -tlnp                     TCP listeners + PID
+  ss -tnp dst :PORT            connections to a port
+  netstat -tlnp                same idea (net-tools)
+  ls -l /proc/PID/fd | grep socket
+
+─── helpers ────────────────────────────────────────────────────────────
+
+  pgrep -a -u ember            processes owned by ember
+  ps -o pid,user,%cpu,%mem,rss,nlwp,comm -p PID
+  taskset -cp PID              CPU affinity
+  ps -L -p PID -o pid,tid,psr,pcpu,comm
+  free -h

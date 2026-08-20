@@ -1,0 +1,754 @@
+#!/usr/bin/env python3
+"""misc-ctl -- Interviewer control CLI for standalone misc training labs.
+
+Local machine only.  Starts/stops one-off workloads as the candidate user.
+Does not talk to Styx, Prometheus, Oracle, or other cluster nodes.
+
+Usage:
+  misc-ctl scenarios list                List available misc scenarios
+  misc-ctl scenarios info <id>           Show scenario details
+  misc-ctl scenarios apply <id>          Start scenario workloads
+  misc-ctl scenarios hint <id>           Show next progressive hint
+  misc-ctl scenarios verify <id>         Check that injection is live
+  misc-ctl scenarios reset               Stop all misc workloads
+  misc-ctl status                        Show active misc scenario
+"""
+
+import configparser
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+
+try:
+    import yaml
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+
+KNOWN_COMMS = [
+    "task-worker",
+    "cache-daemon",
+    "index-builder",
+    "health-probe",
+    "log-shipper",
+    "page-scanner",
+    "thread-pool",
+]
+
+CLUSTER_COMMS = [
+    "atlas", "hermes", "mnemosyne", "themis", "styx", "prometheus", "oracle",
+]
+
+
+def find_repo_root():
+    """Walk up from this script to find the repo root (has eidolon.conf)."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(10):
+        if os.path.exists(os.path.join(d, "eidolon.conf")):
+            return d
+        d = os.path.dirname(d)
+    print("ERROR: Cannot find eidolon.conf", file=sys.stderr)
+    sys.exit(1)
+
+
+REPO_ROOT = find_repo_root()
+SCENARIOS_DIR = os.path.join(REPO_ROOT, "misc", "scenarios")
+BIN_DIR = os.path.join(REPO_ROOT, "misc", "build", "bin")
+HINT_FILE = "/tmp/eidolon-misc-hints.json"
+
+
+def load_conf():
+    conf = configparser.ConfigParser()
+    conf.read(os.path.join(REPO_ROOT, "eidolon.conf"))
+    return conf
+
+
+def get_sudo_pass():
+    conf = load_conf()
+    return conf.get("auth", "sudo_pass", fallback="")
+
+
+def candidate_user():
+    conf = load_conf()
+    return conf.get("users", "candidate", fallback="ember")
+
+
+def candidate_home():
+    return f"/home/{candidate_user()}"
+
+
+def misc_runtime_dir():
+    return os.path.join(candidate_home(), "tmp", "misc")
+
+
+def state_path():
+    return os.path.join(misc_runtime_dir(), "state.json")
+
+
+def _sudo_base(user=None):
+    """Build a sudo argv prefix. Uses -S when a password is configured."""
+    sudo_pass = get_sudo_pass()
+    cmd = ["sudo", "-n"] if not sudo_pass else ["sudo", "-S"]
+    if user:
+        cmd.extend(["-H", "-u", user])
+    return cmd, sudo_pass
+
+
+def run_sudo(argv, timeout=30, input_extra=""):
+    """Run a command via sudo (as root). Returns (stdout, stderr, rc)."""
+    prefix, sudo_pass = _sudo_base(user=None)
+    stdin = (sudo_pass + "\n" + input_extra) if sudo_pass else input_extra
+    try:
+        proc = subprocess.run(
+            prefix + argv,
+            input=stdin if stdin else None,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return proc.stdout, proc.stderr, proc.returncode
+    except subprocess.TimeoutExpired:
+        return "", "timeout", 1
+
+
+def run_as_candidate(cmd, timeout=60):
+    """Run a shell command as the candidate user. Returns (stdout, stderr, rc)."""
+    prefix, sudo_pass = _sudo_base(user=candidate_user())
+    # --noprofile --norc: ember's login bashrc prints a MOTD and must not
+    # be sourced (it also keeps login shells from lingering on jobs).
+    argv = prefix + ["/bin/bash", "--noprofile", "--norc", "-c", cmd]
+    stdin = (sudo_pass + "\n") if sudo_pass else None
+    try:
+        proc = subprocess.run(
+            argv,
+            input=stdin,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return proc.stdout, proc.stderr, proc.returncode
+    except subprocess.TimeoutExpired:
+        return "", "timeout", 1
+
+
+def load_manifest(scenario_id):
+    scenario_dir = os.path.join(SCENARIOS_DIR, scenario_id)
+    manifest_path = os.path.join(scenario_dir, "manifest.yaml")
+
+    if not os.path.exists(manifest_path):
+        print(f"ERROR: Scenario '{scenario_id}' not found.", file=sys.stderr)
+        print(f"  Looked in: {manifest_path}", file=sys.stderr)
+        sys.exit(1)
+
+    if HAS_YAML:
+        with open(manifest_path) as f:
+            return yaml.safe_load(f)
+
+    print("WARNING: PyYAML not installed, manifest parsing may be limited",
+          file=sys.stderr)
+    data = {}
+    with open(manifest_path) as f:
+        for line in f:
+            line = line.strip()
+            if ":" in line and not line.startswith("-"):
+                key, _, val = line.partition(":")
+                data[key.strip()] = val.strip().strip('"').strip("'")
+    return data
+
+
+def list_scenarios():
+    if not os.path.isdir(SCENARIOS_DIR):
+        print("No misc scenarios directory found.")
+        return
+
+    scenarios = []
+    for entry in sorted(os.listdir(SCENARIOS_DIR)):
+        manifest_path = os.path.join(SCENARIOS_DIR, entry, "manifest.yaml")
+        if os.path.exists(manifest_path):
+            manifest = load_manifest(entry)
+            scenarios.append({
+                "id": entry,
+                "name": manifest.get("name", entry),
+                "difficulty": manifest.get("difficulty", "?"),
+                "category": manifest.get("category", "misc"),
+                "module": manifest.get("module", ""),
+            })
+
+    if not scenarios:
+        print("No scenarios found in", SCENARIOS_DIR)
+        return
+
+    print()
+    print("  Misc Training Labs (local only)")
+    print("  " + "─" * 90)
+    print(f"  {'ID':<28s} {'Name':<36s} {'Difficulty':<12s} {'Module'}")
+    print("  " + "─" * 90)
+    for s in scenarios:
+        mod = str(s["module"]) if s["module"] else "?"
+        print(f"  {s['id']:<28s} {s['name']:<36s} "
+              f"{s['difficulty']:<12s} {mod}")
+    print()
+
+
+def show_scenario_info(scenario_id):
+    manifest = load_manifest(scenario_id)
+    print()
+    print(f"  Scenario: {manifest.get('name', scenario_id)}")
+    print(f"  ID:         {manifest.get('id', scenario_id)}")
+    print(f"  Difficulty: {manifest.get('difficulty', '?')}")
+    print(f"  Category:   {manifest.get('category', 'misc')}")
+    if manifest.get("module"):
+        print(f"  Module:     {manifest.get('module')}")
+    print()
+    desc = manifest.get("description", "No description.")
+    print("  Description:")
+    for line in desc.strip().split("\n"):
+        print(f"    {line.strip()}")
+    print()
+
+    symptoms = manifest.get("symptoms", [])
+    if symptoms:
+        print("  Symptoms:")
+        for s in symptoms:
+            print(f"    - {s}")
+        print()
+
+    lab = manifest.get("lab_instructions")
+    if lab:
+        print("  Lab Instructions:")
+        for line in lab.strip().split("\n"):
+            print(f"    {line}")
+        print()
+
+    deliverable = manifest.get("deliverable")
+    if deliverable:
+        print(f"  Deliverable: {deliverable}")
+        print()
+
+    procs = manifest.get("processes", [])
+    if procs:
+        print("  Processes:")
+        for p in procs:
+            args = " ".join(str(a) for a in p.get("args", []))
+            print(f"    - {p.get('binary', '?')} {args}  "
+                  f"(comm={p.get('comm', p.get('binary', '?'))})")
+        print()
+
+
+def _load_hint_index():
+    try:
+        with open(HINT_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_hint_index(data):
+    try:
+        with open(HINT_FILE, "w") as f:
+            json.dump(data, f)
+    except OSError:
+        pass
+
+
+def show_hint(scenario_id):
+    manifest = load_manifest(scenario_id)
+    hints = manifest.get("hints", [])
+    if not hints:
+        print("No hints available for this scenario.")
+        return
+
+    idx_map = _load_hint_index()
+    idx = int(idx_map.get(scenario_id, 0))
+    if idx >= len(hints):
+        print("All hints have been shown.")
+        return
+
+    hint = hints[idx]
+    if isinstance(hint, dict):
+        level = hint.get("level", idx + 1)
+        text = hint.get("text", "")
+    else:
+        level = idx + 1
+        text = str(hint)
+
+    print(f"\n  Hint {level}: {text}\n")
+    idx_map[scenario_id] = idx + 1
+    _save_hint_index(idx_map)
+
+
+def _read_state():
+    stdout, _, rc = run_as_candidate(
+        f"test -f {shlex.quote(state_path())} && "
+        f"cat {shlex.quote(state_path())} || true"
+    )
+    if rc != 0 or not stdout.strip():
+        return None
+    try:
+        return json.loads(stdout)
+    except ValueError:
+        return None
+
+
+def _write_state(state):
+    payload = json.dumps(state, indent=2)
+    runtime = misc_runtime_dir()
+    cmd = (
+        f"mkdir -p {shlex.quote(runtime)} && "
+        f"cat > {shlex.quote(state_path())} << 'EOF'\n"
+        f"{payload}\nEOF"
+    )
+    _, stderr, rc = run_as_candidate(cmd)
+    if rc != 0:
+        print(f"WARNING: failed to write state.json: {stderr.strip()}",
+              file=sys.stderr)
+
+
+def _pid_alive(pid):
+    stdout, _, _ = run_as_candidate(
+        f"kill -0 {int(pid)} 2>/dev/null && echo ALIVE || echo DEAD"
+    )
+    return stdout.strip() == "ALIVE"
+
+
+def _kill_pid(pid):
+    run_as_candidate(
+        f"kill -TERM {int(pid)} 2>/dev/null || true"
+    )
+    time.sleep(0.4)
+    if _pid_alive(pid):
+        run_as_candidate(f"kill -KILL {int(pid)} 2>/dev/null || true")
+
+
+def reset_scenarios(quiet=False):
+    """Stop all misc workloads. Never signals cluster services."""
+    if not quiet:
+        print("\n  Resetting misc workloads...")
+
+    state = _read_state()
+    pids = []
+    comms = set(KNOWN_COMMS)
+    if state:
+        for proc in state.get("processes", []):
+            if proc.get("pid"):
+                pids.append(int(proc["pid"]))
+            if proc.get("comm"):
+                comms.add(proc["comm"])
+
+    for pid in pids:
+        if not quiet:
+            print(f"  Stopping pid {pid}")
+        _kill_pid(pid)
+
+    # Fallback: exact comm match as the candidate user only.
+    for comm in sorted(comms):
+        if comm in CLUSTER_COMMS:
+            continue
+        run_as_candidate(f"pkill -u {shlex.quote(candidate_user())} "
+                         f"-x {shlex.quote(comm)} 2>/dev/null || true")
+
+    time.sleep(0.3)
+
+    leftover = []
+    for comm in sorted(comms):
+        stdout, _, _ = run_as_candidate(
+            f"pgrep -u {shlex.quote(candidate_user())} -x "
+            f"{shlex.quote(comm)} || true"
+        )
+        if stdout.strip():
+            leftover.extend(stdout.split())
+
+    if leftover:
+        if not quiet:
+            print(f"  WARNING: leftover PIDs after reset: {', '.join(leftover)}")
+            print("  Sending SIGKILL...")
+        for pid in leftover:
+            run_as_candidate(f"kill -KILL {pid} 2>/dev/null || true")
+
+    runtime = misc_runtime_dir()
+    run_as_candidate(f"rm -rf {shlex.quote(runtime)}")
+
+    idx_map = _load_hint_index()
+    idx_map.clear()
+    _save_hint_index(idx_map)
+
+    if not quiet:
+        print("  Misc reset complete. Cluster services were not touched.\n")
+
+
+def _prepare_runtime():
+    runtime = misc_runtime_dir()
+    dest_bin = os.path.join(runtime, "bin")
+    dest_data = os.path.join(runtime, "data")
+    dest_logs = os.path.join(runtime, "logs")
+    run_as_candidate(
+        f"mkdir -p {shlex.quote(dest_bin)} "
+        f"{shlex.quote(dest_data)} {shlex.quote(dest_logs)}"
+    )
+    if not os.path.isdir(BIN_DIR):
+        print("ERROR: misc workloads are not built.", file=sys.stderr)
+        print(f"  Run: {os.path.join(REPO_ROOT, 'misc', 'build.sh')}",
+              file=sys.stderr)
+        sys.exit(1)
+
+    for name in os.listdir(BIN_DIR):
+        src = os.path.join(BIN_DIR, name)
+        if os.path.isfile(src) and os.access(src, os.X_OK):
+            # Copy as root then chown so ember can execute even if the
+            # master home directory is not world-readable.
+            dst = os.path.join(dest_bin, name)
+            _, err, rc = run_sudo(
+                ["cp", "-f", src, dst],
+                timeout=15,
+            )
+            if rc != 0:
+                print(f"ERROR: failed to copy {name}: {err}", file=sys.stderr)
+                sys.exit(1)
+    run_sudo(
+        ["chown", "-R",
+         f"{candidate_user()}:{candidate_user()}",
+         runtime],
+        timeout=15,
+    )
+    run_sudo(["chmod", "-R", "u+rwx", runtime], timeout=15)
+
+
+def apply_scenario(scenario_id):
+    manifest = load_manifest(scenario_id)
+    procs = manifest.get("processes", [])
+    if not procs:
+        print(f"ERROR: Scenario '{scenario_id}' has no processes.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\n  Applying misc scenario: {manifest.get('name', scenario_id)}")
+    print("  Resetting any previous misc workloads first...")
+    reset_scenarios(quiet=True)
+    _prepare_runtime()
+
+    runtime = misc_runtime_dir()
+    dest_bin = os.path.join(runtime, "bin")
+    dest_logs = os.path.join(runtime, "logs")
+    started = []
+
+    for spec in procs:
+        binary = spec.get("binary", "")
+        comm = spec.get("comm", binary)
+        args = [str(a) for a in spec.get("args", [])]
+        bin_path = os.path.join(dest_bin, binary)
+        log_path = os.path.join(dest_logs, f"{comm}.log")
+
+        argv = [bin_path]
+        if comm:
+            argv.extend(["--comm", comm])
+        argv.extend(args)
+
+        # Detach via start_new_session so sudo/bash return immediately.
+        starter = (
+            "import os, subprocess\n"
+            f"os.chdir({runtime!r})\n"
+            f"lf = open({log_path!r}, 'ab', buffering=0)\n"
+            "p = subprocess.Popen(\n"
+            f"    {argv!r},\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=lf, stderr=lf,\n"
+            "    start_new_session=True, close_fds=True,\n"
+            ")\n"
+            "print(p.pid)\n"
+        )
+        stdout, stderr, rc = run_as_candidate(
+            "python3 -c " + shlex.quote(starter), timeout=15,
+        )
+        pid_s = stdout.strip().split()[-1] if stdout.strip() else ""
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            print(f"ERROR: failed to start {binary}: rc={rc} "
+                  f"stdout={stdout!r} stderr={stderr!r}", file=sys.stderr)
+            reset_scenarios(quiet=True)
+            sys.exit(1)
+
+        print(f"  Started {binary} (comm={comm}, pid={pid})")
+        started.append({
+            "binary": binary,
+            "comm": comm,
+            "pid": pid,
+            "args": args,
+            "log": log_path,
+        })
+
+    state = {
+        "scenario_id": scenario_id,
+        "name": manifest.get("name", scenario_id),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "processes": started,
+    }
+    _write_state(state)
+
+    idx_map = _load_hint_index()
+    idx_map[scenario_id] = 0
+    _save_hint_index(idx_map)
+
+    print("\n  Scenario applied successfully.\n")
+
+
+def _cpu_pct(pid, sample_s=1.0):
+    """Approximate %CPU for a pid using /proc/stat deltas (one CPU = 100)."""
+    def read_times():
+        stdout, _, rc = run_as_candidate(
+            f"awk '{{print $14,$15}}' /proc/{int(pid)}/stat 2>/dev/null || true"
+        )
+        parts = stdout.split()
+        if rc != 0 or len(parts) < 2:
+            return None
+        try:
+            return int(parts[0]) + int(parts[1])
+        except ValueError:
+            return None
+
+    t1 = read_times()
+    if t1 is None:
+        return None
+    time.sleep(sample_s)
+    t2 = read_times()
+    if t2 is None:
+        return None
+    ticks = os.sysconf(os.sysconf_names.get("SC_CLK_TCK", "SC_CLK_TCK"))
+    if not ticks:
+        ticks = 100
+    pct = (t2 - t1) / (sample_s * ticks) * 100.0
+    return pct
+
+
+def _rss_kb(pid):
+    stdout, _, rc = run_as_candidate(
+        f"awk '/VmRSS:/ {{print $2}}' /proc/{int(pid)}/status 2>/dev/null || true"
+    )
+    if rc != 0 or not stdout.strip():
+        return None
+    try:
+        return int(stdout.strip().split()[0])
+    except ValueError:
+        return None
+
+
+def _socket_count(pid):
+    stdout, _, _ = run_as_candidate(
+        f"ls -l /proc/{int(pid)}/fd 2>/dev/null | grep -c socket || true"
+    )
+    try:
+        return int(stdout.strip() or "0")
+    except ValueError:
+        return 0
+
+
+def _thread_count(pid):
+    stdout, _, _ = run_as_candidate(
+        f"ls /proc/{int(pid)}/task 2>/dev/null | wc -l"
+    )
+    try:
+        return int(stdout.strip() or "0")
+    except ValueError:
+        return 0
+
+
+def _find_pid_for_comm(comm, state):
+    if state:
+        for proc in state.get("processes", []):
+            if proc.get("comm") == comm and proc.get("pid"):
+                if _pid_alive(proc["pid"]):
+                    return int(proc["pid"])
+    stdout, _, _ = run_as_candidate(
+        f"pgrep -u {shlex.quote(candidate_user())} -x {shlex.quote(comm)} | head -1"
+    )
+    if stdout.strip():
+        try:
+            return int(stdout.strip().split()[0])
+        except ValueError:
+            return None
+    return None
+
+
+def verify_scenario(scenario_id):
+    manifest = load_manifest(scenario_id)
+    checks = manifest.get("verify", [])
+    if not checks:
+        print("No verification checks defined for this scenario.")
+        return 0
+
+    state = _read_state()
+    print(f"\n  Verifying scenario: {manifest.get('name', scenario_id)}")
+    all_pass = True
+
+    for check in checks:
+        check_type = check.get("type", "")
+        comm = check.get("comm", "")
+        pid = _find_pid_for_comm(comm, state) if comm else None
+
+        if check_type == "process_running":
+            if pid and _pid_alive(pid):
+                print(f"  [PASS] {comm} is running (pid={pid})")
+            else:
+                print(f"  [FAIL] {comm} is not running")
+                all_pass = False
+
+        elif check_type == "cpu_pct_gte":
+            expected = float(check.get("value", 0))
+            if not pid:
+                print(f"  [FAIL] {comm}: process not found")
+                all_pass = False
+                continue
+            pct = _cpu_pct(pid, sample_s=1.5)
+            if pct is None:
+                print(f"  [FAIL] {comm}: could not sample CPU")
+                all_pass = False
+            elif pct >= expected:
+                print(f"  [PASS] {comm}: CPU {pct:.0f}% >= {expected:.0f}%")
+            else:
+                print(f"  [FAIL] {comm}: CPU {pct:.0f}% < {expected:.0f}%")
+                all_pass = False
+
+        elif check_type == "rss_mb_gte":
+            expected = float(check.get("value", 0))
+            if not pid:
+                print(f"  [FAIL] {comm}: process not found")
+                all_pass = False
+                continue
+            rss = _rss_kb(pid)
+            if rss is None:
+                print(f"  [FAIL] {comm}: could not read RSS")
+                all_pass = False
+            else:
+                mb = rss / 1024.0
+                if mb >= expected:
+                    print(f"  [PASS] {comm}: RSS {mb:.0f} MB >= {expected:.0f} MB")
+                else:
+                    print(f"  [FAIL] {comm}: RSS {mb:.0f} MB < {expected:.0f} MB")
+                    all_pass = False
+
+        elif check_type == "rss_grew":
+            wait_s = float(check.get("wait_s", 4))
+            min_delta_mb = float(check.get("value", 8))
+            if not pid:
+                print(f"  [FAIL] {comm}: process not found")
+                all_pass = False
+                continue
+            r1 = _rss_kb(pid)
+            time.sleep(wait_s)
+            r2 = _rss_kb(pid)
+            if r1 is None or r2 is None:
+                print(f"  [FAIL] {comm}: could not sample RSS")
+                all_pass = False
+            else:
+                delta = (r2 - r1) / 1024.0
+                if delta >= min_delta_mb:
+                    print(f"  [PASS] {comm}: RSS grew {delta:.0f} MB "
+                          f"in {wait_s:.0f}s (>= {min_delta_mb:.0f} MB)")
+                else:
+                    print(f"  [FAIL] {comm}: RSS grew {delta:.0f} MB "
+                          f"< {min_delta_mb:.0f} MB")
+                    all_pass = False
+
+        elif check_type == "socket_count_gte":
+            expected = int(check.get("value", 0))
+            if not pid:
+                print(f"  [FAIL] {comm}: process not found")
+                all_pass = False
+                continue
+            n = _socket_count(pid)
+            if n >= expected:
+                print(f"  [PASS] {comm}: {n} sockets >= {expected}")
+            else:
+                print(f"  [FAIL] {comm}: {n} sockets < {expected}")
+                all_pass = False
+
+        elif check_type == "thread_count_gte":
+            expected = int(check.get("value", 0))
+            if not pid:
+                print(f"  [FAIL] {comm}: process not found")
+                all_pass = False
+                continue
+            n = _thread_count(pid)
+            if n >= expected:
+                print(f"  [PASS] {comm}: {n} threads >= {expected}")
+            else:
+                print(f"  [FAIL] {comm}: {n} threads < {expected}")
+                all_pass = False
+
+        else:
+            print(f"  [SKIP] unknown check type '{check_type}'")
+
+    print()
+    if all_pass:
+        print("  Result: ALL CHECKS PASSED")
+        return 0
+    print("  Result: SOME CHECKS FAILED")
+    return 1
+
+
+def show_status():
+    state = _read_state()
+    print()
+    if not state:
+        print("  Misc status: idle (no scenario applied)")
+        print()
+        return
+
+    print(f"  Misc status: {state.get('name', state.get('scenario_id'))}")
+    print(f"  ID:          {state.get('scenario_id')}")
+    print(f"  Started:     {state.get('started_at', '?')}")
+    print()
+    print(f"  {'PID':<8s} {'Comm':<18s} {'Binary':<16s} {'Alive'}")
+    print("  " + "─" * 50)
+    for proc in state.get("processes", []):
+        pid = proc.get("pid", "?")
+        alive = "yes" if (isinstance(pid, int) and _pid_alive(pid)) else "no"
+        print(f"  {str(pid):<8s} {proc.get('comm', '?'):<18s} "
+              f"{proc.get('binary', '?'):<16s} {alive}")
+    print()
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+
+    group = sys.argv[1].lower()
+    cmd = sys.argv[2].lower() if len(sys.argv) > 2 else ""
+    arg = sys.argv[3] if len(sys.argv) > 3 else ""
+
+    if group in ("help", "--help", "-h"):
+        print(__doc__)
+        return
+
+    if group == "status":
+        show_status()
+        return
+
+    if group == "scenarios":
+        if cmd == "list":
+            list_scenarios()
+        elif cmd == "info" and arg:
+            show_scenario_info(arg)
+        elif cmd == "apply" and arg:
+            apply_scenario(arg)
+        elif cmd == "hint" and arg:
+            show_hint(arg)
+        elif cmd == "verify" and arg:
+            rc = verify_scenario(arg)
+            sys.exit(rc)
+        elif cmd == "reset":
+            reset_scenarios()
+        else:
+            print("Usage: misc-ctl scenarios "
+                  "{list|info|apply|hint|verify|reset} [id]")
+            sys.exit(1)
+        return
+
+    print(f"Unknown command group: {group}", file=sys.stderr)
+    print(__doc__)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

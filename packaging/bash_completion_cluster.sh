@@ -11,7 +11,7 @@ _cluster_completions() {
       COMPREPLY=($(compgen -W "status start stop restart members services help" -- "$cur"))
       ;;
     start|stop|restart)
-      COMPREPLY=($(compgen -W "styx mnemosyne hermes themis prometheus" -- "$cur"))
+      COMPREPLY=($(compgen -W "styx mnemosyne hermes themis atlas prometheus" -- "$cur"))
       ;;
     *)
       COMPREPLY=()

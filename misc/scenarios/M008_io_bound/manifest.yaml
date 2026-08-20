@@ -1,0 +1,39 @@
+name: "I/O-bound writer"
+id: M008_io_bound
+difficulty: medium
+category: misc
+module: 5
+
+description: >
+  A process writes and fsyncs a wrapping file so iostat and vmstat show disk
+  activity (wkB/s, await, bi/bo, possibly %iowait on slower disks).
+
+symptoms:
+  - "iostat shows writes to a device"
+  - "vmstat bo (blocks out) is elevated"
+  - "CPU may be modest; this is an I/O lab, not a CPU lab"
+
+lab_instructions: |
+  1. Run 'iostat -xz 1 8' and look at wkB/s, w/s, await, %util.
+  2. Run 'vmstat 1 8' and look at bo and wa.
+  3. Find the process (comm page-scanner) and confirm with 'pidstat -d -p PID 1 5'.
+  4. On fast SSDs %iowait may stay low — still report throughput and await.
+
+deliverable: "iostat/vmstat evidence of write I/O plus the PID responsible"
+
+hints:
+  - level: 1
+    text: "iostat -xz 1 8 is the usual live disk view. Ignore the first sample."
+  - level: 2
+    text: "pidstat -d attributes kB_wr/s to a PID; pgrep -x page-scanner."
+  - level: 3
+    text: "This page-scanner is started with --fsync so writes hit the disk, not just page cache."
+
+processes:
+  - binary: page-scanner
+    comm: page-scanner
+    args: ["--path", "data/page-scanner.dat", "--file-mb", "128", "--write-kb", "1024", "--fsync"]
+
+verify:
+  - type: process_running
+    comm: page-scanner

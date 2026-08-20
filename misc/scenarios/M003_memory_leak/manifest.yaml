@@ -1,0 +1,42 @@
+name: "Memory leak"
+id: M003_memory_leak
+difficulty: easy
+category: misc
+module: 2
+
+description: >
+  A process leaks memory at a steady rate (about 8 MB/s) up to a 512 MB cap.
+  Use top over time and pidstat -r to show RSS growing, unlike a one-shot hog.
+
+symptoms:
+  - "A process RSS is climbing every few seconds"
+  - "pidstat -r shows increasing RSS / minflt"
+
+lab_instructions: |
+  1. Find the process with top (Shift-M) — comm is index-builder.
+  2. Watch RSS for 10–15 seconds in top, or: watch -n1 'ps -o rss= -p PID'
+  3. Run 'pidstat -r -p PID 1 8' and confirm RSS grows each sample.
+  4. Explain how this differs from a process that simply allocated a large buffer once.
+
+deliverable: "Evidence that RSS is growing over time, plus the leak rate (MB/s) estimated from pidstat/ps"
+
+hints:
+  - level: 1
+    text: "Take two RSS samples a few seconds apart with ps -o rss= -p PID."
+  - level: 2
+    text: "pidstat -r -p PID 1 8 reports RSS and minor faults once per second."
+  - level: 3
+    text: "index-builder leaks about 8 MB/s until it hits a 512 MB safety cap, then it holds."
+
+processes:
+  - binary: index-builder
+    comm: index-builder
+    args: ["--mb-per-sec", "8", "--cap-mb", "512", "--start-mb", "32"]
+
+verify:
+  - type: process_running
+    comm: index-builder
+  - type: rss_grew
+    comm: index-builder
+    value: 8
+    wait_s: 4

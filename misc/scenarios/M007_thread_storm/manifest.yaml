@@ -1,0 +1,42 @@
+name: "Thread storm"
+id: M007_thread_storm
+difficulty: easy
+category: misc
+module: 5
+
+description: >
+  One process runs many busy threads pinned to a single CPU. top without -H
+  shows one PID; top -H / ps -L / pidstat -t show the threads.
+
+symptoms:
+  - "A single process appears busy"
+  - "Thread count is much higher than 1"
+  - "Per-thread CPU in top -H is a slice of one core"
+
+lab_instructions: |
+  1. Find thread-pool with top. Note PID and %CPU.
+  2. Press H in top (or 'top -H -p PID') to see threads.
+  3. Run 'ps -L -p PID -o pid,tid,psr,pcpu,comm'
+  4. Run 'pidstat -t -p PID 1 5' for per-TID CPU.
+
+deliverable: "PID, thread count, and an explanation that one process != one thread"
+
+hints:
+  - level: 1
+    text: "In top, press H to toggle thread mode. Each row is then a TID."
+  - level: 2
+    text: "ps -L -p PID lists threads. wc -l on /proc/PID/task is the thread count."
+  - level: 3
+    text: "thread-pool runs 16 threads pinned to one CPU, so they share ~100% of a single core."
+
+processes:
+  - binary: thread-pool
+    comm: thread-pool
+    args: ["--threads", "16", "--pin-cpu", "0"]
+
+verify:
+  - type: process_running
+    comm: thread-pool
+  - type: thread_count_gte
+    comm: thread-pool
+    value: 16

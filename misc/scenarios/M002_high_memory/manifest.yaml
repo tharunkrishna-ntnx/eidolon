@@ -1,0 +1,42 @@
+name: "High memory process"
+id: M002_high_memory
+difficulty: easy
+category: misc
+module: 1
+
+description: >
+  A process holds a large, steady anonymous allocation (about 512 MB RSS)
+  while using almost no CPU. Use top (sort by memory) and free to find it.
+
+symptoms:
+  - "A process is holding hundreds of megabytes of RSS"
+  - "CPU for that process is idle / near zero"
+  - "free shows less available memory than before the lab"
+
+lab_instructions: |
+  1. Run 'free -h' and note used/available.
+  2. Run 'top' and sort by memory (Shift-M). Identify the largest RSS.
+  3. Confirm with 'ps -o pid,user,%cpu,%mem,rss,comm -p PID'
+  4. Contrast %CPU vs %MEM — this is a memory hog, not a CPU hog.
+
+deliverable: "PID, RSS size, and a one-line explanation that the allocation is steady (not growing)"
+
+hints:
+  - level: 1
+    text: "In top, press Shift-M to sort by RES/memory instead of CPU."
+  - level: 2
+    text: "Look for cache-daemon. RSS should be around 512 MB and not climbing."
+  - level: 3
+    text: "free -h shows the system-wide effect; ps -o rss= -p PID confirms the process RSS in KB."
+
+processes:
+  - binary: cache-daemon
+    comm: cache-daemon
+    args: ["--mb", "512"]
+
+verify:
+  - type: process_running
+    comm: cache-daemon
+  - type: rss_mb_gte
+    comm: cache-daemon
+    value: 400
